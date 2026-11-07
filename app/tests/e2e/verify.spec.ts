@@ -147,6 +147,17 @@ test.describe("AIW-01 verification", () => {
       await expect(p2.locator('[data-offline="ready"]')).toBeVisible();
       const styled = await p2.locator(".tabbar").evaluate((e) => getComputedStyle(e).position);
       expect(["fixed", "sticky"]).toContain(styled); // "static" would mean the styles did not load
+      // AIW-03: memory works offline too — a project and a memory entry created with the network cut
+      await p2.goto(url + "#/proiecte");
+      await p2.locator('[data-action="new-project"]').first().click();
+      await p2.locator("#project-form input").fill("Creat fără internet");
+      await p2.locator("#project-form button[type=submit]").click();
+      await p2.locator('.row[data-project="Creat fără internet"] .row-main').click();
+      await p2.locator('[data-action="open-memory"]').click();
+      await p2.locator('[data-action="add-memory"]').click();
+      await p2.locator('#entry-form input[name="title"]').fill("Notă fără internet");
+      await p2.locator('#entry-form button[type="submit"]').click();
+      await expect(p2.locator('.row[data-entry="Notă fără internet"]')).toBeVisible();
       console.log("OFFLINE — cereri:", offline.requests.length, "eșuate:", offline.failed.length, offline.failed.join(" | "));
       expect(offline.failed.filter((f) => !f.includes("/sw.js"))).toEqual([]);
     } finally {

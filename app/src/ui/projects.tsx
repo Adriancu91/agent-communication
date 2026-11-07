@@ -1,9 +1,10 @@
 // Project manager screens: list (search, order, pin), project page, trash, create/edit dialogs.
 import type { JSX } from "preact";
-import { useMemo, useState } from "preact/hooks";
+import { useLayoutEffect, useMemo, useState } from "preact/hooks";
 import { DESCRIPTION_MAX, matches, NAME_MAX, sortProjects, type Project, type SortOrder } from "../core";
-import { askPersistOnce, errorKey, isIOS, store, useProjects } from "./data";
-import { useI18n } from "./i18n";
+import { askPersistOnce, errorKey, isIOS, rememberProject, store, useProjects } from "./data";
+import { MemoryCard } from "./memory";
+import { useDate, useI18n } from "./i18n";
 import { IconMore, IconPin } from "./icons";
 import { Confirm, Dialog, toast } from "./widgets";
 
@@ -23,12 +24,6 @@ function writePref(key: string, v: string) {
   } catch {
     /* not fatal */
   }
-}
-
-export function useDate(): (iso: string) => string {
-  const { lang } = useI18n();
-  const f = useMemo(() => new Intl.DateTimeFormat(lang === "ro" ? "ro-RO" : "en-GB", { dateStyle: "medium", timeStyle: "short" }), [lang]);
-  return (iso) => f.format(new Date(iso));
 }
 
 /** Runs a store action; on failure shows the reason and returns false (nothing was changed). */
@@ -284,6 +279,10 @@ export function ProjectPage(props: { id: string }): JSX.Element {
   const run = useAction();
   const date = useDate();
   const p = projects.find((x) => x.id === props.id);
+  useLayoutEffect(() => {
+    // synchronous: the Memory tab must see this project as "last used" even if opened right away
+    if (p && !p.deletedAt) rememberProject(p.id);
+  }, [p?.id, p?.deletedAt]);
 
   return (
     <section>
@@ -321,11 +320,7 @@ export function ProjectPage(props: { id: string }): JSX.Element {
               </button>
             </div>
           )}
-          <div class="card">
-            <h2>{t("projectContent")}</h2>
-            <p class="muted">{t("projectContentHint")}</p>
-            <span class="badge">{t("comingSoon")}</span>
-          </div>
+          <MemoryCard projectId={p.id} />
           {p.nameHistory.length > 0 && (
             <div class="card">
               <h2>{t("nameHistory")}</h2>

@@ -19,6 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0 # the migration test builds the AIW-02 app from its commit
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -29,6 +30,8 @@ jobs:
         run: npm run licenses
       - name: Types, build, unit tests
         run: npm run typecheck && npm run build && npm test
+      - name: AIW-02 app for the migration test (built from commit fe039c0)
+        run: node scripts/build-aiw02-baseline.mjs
       - name: Browsers for the tests (iPhone engine + Chromium)
         run: npx playwright install --with-deps chromium webkit
       - name: Screen tests (iPhone, iPhone SE, Android, PC)

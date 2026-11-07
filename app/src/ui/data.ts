@@ -1,11 +1,64 @@
 // The app's single project store and the hooks the screens use.
 import { useEffect, useState } from "preact/hooks";
-import type { Project } from "../core";
+import type { EntryVersion, MemoryEntry, MemoryLink, Project } from "../core";
+import { LinkError, MemoryStore, MemoryValidationError } from "../memory";
 import { ProjectStore, ValidationError } from "../projects";
-import { persistState, requestPersist, StorageError, usage, whenClosedByNewerVersion, type PersistState } from "../storage";
+import { JournaledStore, persistState, requestPersist, StorageError, usage, whenClosedByNewerVersion, type PersistState } from "../storage";
 import type { Key } from "./i18n";
 
-export const store = new ProjectStore();
+/** One database connection and one journal for the whole app; projects and memory share it. */
+export const base = new JournaledStore();
+export const store = new ProjectStore(base);
+export const memoryStore = new MemoryStore(base);
+
+export interface MemoryState {
+  entries: MemoryEntry[];
+  links: MemoryLink[];
+  versions: Map<string, EntryVersion[]>;
+  loading: boolean;
+  error: StorageError | null;
+}
+
+/** One project's memory, reloaded after any change (here or in another tab). */
+export function useMemory(projectId: string | null): MemoryState {
+  const [state, setState] = useState<MemoryState>({ entries: [], links: [], versions: new Map(), loading: true, error: null });
+  useEffect(() => {
+    if (!projectId) {
+      setState({ entries: [], links: [], versions: new Map(), loading: false, error: null });
+      return;
+    }
+    let alive = true;
+    setState((s) => ({ ...s, loading: true }));
+    const load = () =>
+      Promise.all([memoryStore.list(projectId), memoryStore.links(projectId), memoryStore.versions(projectId)]).then(
+        ([entries, links, versions]) => alive && setState({ entries, links, versions, loading: false, error: null }),
+        (e) => alive && setState((s) => ({ ...s, loading: false, error: e instanceof StorageError ? e : new StorageError("unknown") })),
+      );
+    load();
+    const off = memoryStore.subscribe(load);
+    return () => {
+      alive = false;
+      off();
+    };
+  }, [projectId]);
+  return state;
+}
+
+const LAST = "aiw.lastProject";
+export function rememberProject(id: string): void {
+  try {
+    localStorage.setItem(LAST, id);
+  } catch {
+    /* not fatal */
+  }
+}
+export function lastProject(): string | null {
+  try {
+    return localStorage.getItem(LAST);
+  } catch {
+    return null;
+  }
+}
 
 export interface ProjectsState {
   projects: Project[];
@@ -50,6 +103,13 @@ export function useClosedByNewerVersion(): boolean {
 
 /** The text key that explains an error to the user. */
 export function errorKey(e: unknown): Key {
+  if (e instanceof LinkError) return `le_${e.reason}` as Key;
+  if (e instanceof MemoryValidationError) {
+    if (e.field === "title") return e.reason === "empty" ? "errTitleEmpty" : e.reason === "tooLong" ? "errTitleLong" : "errChars";
+    if (e.field === "body") return e.reason === "tooLong" ? "errBodyLong" : "errChars";
+    if (e.field === "reason") return e.reason === "empty" ? "errReasonEmpty" : "errReasonLong";
+    return "errEntryInvalid";
+  }
   if (e instanceof ValidationError) {
     if (e.reason === "empty") return "errEmpty";
     if (e.reason === "tooLong") return e.field === "name" ? "errNameLong" : "errDescLong";
