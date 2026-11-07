@@ -24,11 +24,10 @@ class RepoCase(unittest.TestCase):
         shutil.copytree(SRC, self.root, ignore=IGNORE)
         (self.root / "messages").mkdir(exist_ok=True)
         (self.root / "messages" / ".gitkeep").write_text("")
-        self._env = {k: os.environ.get(k) for k in ("ACP_ROOT", "ACP_CONFIG", "ACP_AGENT", "OPENAI_API_KEY")}
+        self._env = {k: os.environ.get(k) for k in ("ACP_ROOT", "ACP_CONFIG", "ACP_AGENT")}
         os.environ["ACP_ROOT"] = str(self.root)
         os.environ["ACP_CONFIG"] = str(self.root / "protocol" / "config.json")
         os.environ.pop("ACP_AGENT", None)
-        os.environ.pop("OPENAI_API_KEY", None)
         for p in (str(self.root / "tools"), str(self.root / "agents" / "gepeto")):
             sys.path.insert(0, p)
         import acp
@@ -52,8 +51,8 @@ class RepoCase(unittest.TestCase):
 
     # helpers
     def runner(self):
-        import run_openai
-        return importlib.reload(run_openai)
+        import run_auto
+        return importlib.reload(run_auto)
 
     def head(self):
         return sh(self.root, "git", "rev-parse", "HEAD").stdout.strip()

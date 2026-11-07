@@ -9,7 +9,7 @@ Commands:
   build      regenerate the derived views (inbox/, outbox/, discussions/)
   validate   validate every message (fields, threads, duplicates, corrections, secrets)
   guard      check a git range: who really pushed each commit, what they changed
-  costs      monthly OpenAI cost report from logs/usage.jsonl
+  costs      monthly consumption report (messages, local calls; API budget is 0)
 
 Trust model: the author name written in a commit proves nothing. The guard takes the identity
 of whoever pushed a commit from GitHub's activity log (or, before a push, from the publishing
@@ -92,6 +92,7 @@ def format_value(v) -> str:
 
 
 def parse_message_text(text: str, name: str = "?") -> dict:
+    text = text.replace("\r\n", "\n").lstrip("\ufeff")
     if not text.startswith("---\n"):
         raise ValueError(f"{name}: lipsește antetul")
     head, sep, body = text[4:].partition("\n---\n")
@@ -209,8 +210,8 @@ def new_message(frm: str, to: str, subject: str, body: str, *, mtype="message", 
     sentinel = None
     if frm in AGENTS_WITH_LIMITS:
         low = (subject + "\n" + body).lower()
-        if frm == "gepeto" and mtype == "decision" and runtime.startswith("openai-api"):
-            sentinel = "decizie strategică a lui Gepeto-API (G3: definitivă doar cu Adrian)"
+        if frm == "gepeto" and mtype == "decision" and runtime != "chatgpt-ui":
+            sentinel = "decizie a lui Gepeto automat (definitivă doar cu Adrian)"
         elif mtype in ("decision", "task", "decision-request"):
             hit = next((w for w in CONFIG["r3_action_words"] if w in low), None)
             if hit:
@@ -323,6 +324,24 @@ def build_views() -> None:
         lines += [f"- [{p['priority']}] {p['subject']} — de la {p['from']} — `{p['message']}`"
                   + (" — **LIMITĂ DE TURE: escaladează la Adrian**" if p["action"] == "escalate" else "")
                   for p in pend] or ["- nimic"]
+        if agent == "gepeto" and pend:
+            lines += ["\n## Răspunsuri gata de completat (pentru Gepeto din ChatGPT)\n",
+                      "Pentru fiecare mesaj: Gepeto înlocuiește doar textul dintre `---` și final cu răspunsul lui "
+                      "(poate schimba și `subject`, `type`, `priority`). Adrian creează în GitHub fișierul nou la calea "
+                      "indicată și lipește conținutul. Detalii: `agents/gepeto/CHATGPT.md`.\n"]
+            for p in pend:
+                if p["action"] == "escalate":
+                    continue
+                t = now_utc()
+                nid = f"M-{t.strftime('%Y%m%dT%H%M%SZ')}-gepeto-{secrets.token_hex(2)}"
+                hdr = {"id": nid, "thread": p["thread"], "from": "gepeto", "to": p["from"], "date": iso(t),
+                       "subject": ("Re: " + p["subject"])[:200], "priority": "normal", "type": "message",
+                       "status": "open", "in_reply_to": p["message"], "supersedes": None, "refs": [],
+                       "reply_expected": True, "requires_adrian": False, "runtime": "chatgpt-ui"}
+                lines += [f"### Răspuns la „{p['subject']}” (de la {p['from']})\n",
+                          f"Fișier nou: `messages/{t.strftime('%Y')}/{t.strftime('%m')}/{nid}.md`\n", "~~~markdown", "---"]
+                lines += [f"{k}: {format_value(hdr[k])}" for k in FIELDS]
+                lines += ["---", "", "(Gepeto scrie aici răspunsul.)", "~~~", ""]
         if agent == "adrian":
             lines += ["\n## Fire oprite până aprobi tu (needs-adrian)\n"] + (
                 [f"- {ths[t][0]['subject']} — `{t}`" for t in needs] or ["- nimic"])
@@ -590,21 +609,15 @@ def month_usage(month: str) -> dict:
 
 def costs_report(month: str) -> str:
     u = month_usage(month)
-    budget = CONFIG["limits"]["openai_monthly_budget_usd"]
-    by_model: dict[str, list] = {}
-    for e in u["actual"]:
-        by_model.setdefault(e["model"], []).append(e)
-    lines = [f"# Costuri OpenAI — {month}", "",
-             f"- Total înregistrat: **{u['total']:.4f} USD** din bugetul de {budget} USD "
-             f"({100 * u['total'] / budget:.1f}%)",
-             f"- Apeluri reușite: {len(u['actual'])}; rezervări fără rezultat (numărate la cost maxim): {len(u['open'])}",
-             "", "| Model | Apeluri | Tokeni intrare | Tokeni ieșire | Cost (USD) |", "| --- | --- | --- | --- | --- |"]
-    for model, es in sorted(by_model.items()):
-        lines.append(f"| {model} | {len(es)} | {sum(e.get('input_tokens', 0) for e in es)} | "
-                     f"{sum(e.get('output_tokens', 0) for e in es)} | {sum(e['cost_usd'] for e in es):.4f} |")
-    lines += ["", "Atenție: limita din cod oprește Gepeto-API înainte de buget, dar nu e o garanție absolută "
-              "(prețuri schimbate, apeluri întrerupte, erori). Plafonul real e limita de cheltuieli setată în contul OpenAI. "
-              "Compară cu pagina Usage din contul OpenAI."]
+    budget = 0 if not CONFIG.get("billing", {}).get("paid_apis_allowed") else "vezi config"
+    msgs = [m for m in all_messages() if str(m["date"]).startswith(month)]
+    local = [e for e in read_jsonl(USAGE) if str(e.get("ts", "")).startswith(month) and e.get("kind") == "local-call"]
+    lines = [f"# Raport lunar de consum — {month}", "",
+             f"- Buget API: **{budget} USD**; cheltuială API înregistrată: {u['total']:.4f} USD.",
+             f"- Mesaje: " + ", ".join(f"{a}: {sum(1 for m in msgs if m['from'] == a)}" for a in CONFIG["agents"]),
+             f"- Apeluri la modelul local (gratuit): {len(local)}",
+             "", "Minutele GitHub Actions și consumul Claude nu apar aici: se văd în GitHub → Settings → Billing "
+             "și în contul Claude. Verifică acolo că plafonul GitHub Actions rămâne 0 USD."]
     return "\n".join(lines) + "\n"
 
 

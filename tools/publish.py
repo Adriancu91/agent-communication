@@ -33,8 +33,15 @@ def remote() -> str:
     return f"https://x-access-token:{os.environ['PUBLISH_TOKEN']}@github.com/{os.environ['REPO']}.git"
 
 
+def branch() -> str:
+    b = os.environ.get("PUBLISH_BRANCH", "main")
+    if b != "main" and not b.startswith("test/"):
+        raise SystemExit(f"Ramură de publicare nepermisă: {b} (doar main sau test/...)")
+    return b
+
+
 def sync_main() -> str:
-    sh("git", "fetch", "-q", remote(), "main")
+    sh("git", "fetch", "-q", remote(), branch())
     sh("git", "reset", "-q", "--hard", "FETCH_HEAD")
     sh("git", "clean", "-qfd")
     return sh("git", "rev-parse", "HEAD")
@@ -79,7 +86,7 @@ def main() -> int:
         if errs:
             refused = errs
             break
-        if subprocess.run(["git", "push", "-q", remote(), "HEAD:main"], cwd=acp.ROOT,
+        if subprocess.run(["git", "push", "-q", remote(), f"HEAD:{branch()}"], cwd=acp.ROOT,
                           capture_output=True).returncode == 0:
             print(json.dumps({"published": sh("git", "rev-parse", "HEAD"), "as": a.actor, "principal": principal}))
             return 0
@@ -96,7 +103,7 @@ def main() -> int:
     if not acp.apply_bundle(bundle, principal, only=("logs/usage.jsonl",)) and \
             commit(a.agent, "costuri: consum înregistrat (răspuns respins la publicare)") and \
             not checks(base, a.actor):
-        subprocess.run(["git", "push", "-q", remote(), "HEAD:main"], cwd=acp.ROOT, capture_output=True)
+        subprocess.run(["git", "push", "-q", remote(), f"HEAD:{branch()}"], cwd=acp.ROOT, capture_output=True)
         print("Doar jurnalul de costuri a fost publicat.", file=sys.stderr)
     return 1
 

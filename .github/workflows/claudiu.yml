@@ -4,11 +4,14 @@ name: claudiu
 #             command, which runs from a root-owned copy Claude cannot edit and only writes as "claudiu".
 #   publish - no model; same trusted publisher as Gepeto, pushing as Claudiu's own GitHub App.
 # Inactive until Adrian adds the secrets CLAUDE_CODE_OAUTH_TOKEN, CLAUDIU_APP_PRIVATE_KEY and the variable CLAUDIU_APP_CLIENT_ID.
+# Started only by the guard, after a push to main, when Claudiu has messages waiting and
+# the repository variable CLAUDIU_ACTIONS_ENABLED is "true" (saves GitHub Actions minutes).
 on:
-  push:
-    branches: [main]
-    paths: ["messages/**"]
   workflow_dispatch:
+    inputs:
+      target:
+        description: "ramura: main sau test/<nume>"
+        default: "main"
 
 permissions: {}
 
@@ -116,6 +119,7 @@ jobs:
         env:
           PUBLISH_TOKEN: ${{ steps.app.outputs.token }}
           APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          PUBLISH_BRANCH: ${{ inputs.target }}
           REPO: ${{ github.repository }}
         run: |
           export ACP_ROOT="$GITHUB_WORKSPACE" ACP_CONFIG="$RUNNER_TEMP/trusted/config.json"

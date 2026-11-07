@@ -1,5 +1,6 @@
 """Core protocol tests. Run: python3 -m unittest discover -s tests -v"""
 import json
+import re
 import os
 import sys
 
@@ -32,7 +33,7 @@ class ProtocolTest(RepoCase):
         a = self.acp
         m = a.new_message("claudiu", "gepeto", "Ping", "Test", runtime="claude-code")
         env = {**os.environ}
-        r = sh(self.root, sys.executable, "agents/gepeto/run_openai.py", "--mode", "sim", env=env)
+        r = sh(self.root, sys.executable, "agents/gepeto/run_auto.py", "--provider", "sim", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(json.loads(r.stdout)["to_claudiu"])
         pend = a.pending_for("claudiu")
@@ -41,12 +42,45 @@ class ProtocolTest(RepoCase):
         self.assertEqual((reply["in_reply_to"], reply["runtime"]), (m["id"], "sim"))
         self.assertIn("SIMULARE", reply["body"])
 
-    def test_api_mode_without_key_fails_cleanly(self):
+    def test_default_provider_writes_nothing(self):
         self.acp.new_message("claudiu", "gepeto", "Ping", "Test", runtime="claude-code")
-        r = sh(self.root, sys.executable, "agents/gepeto/run_openai.py", "--mode", "api", env={**os.environ})
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("OPENAI_API_KEY", r.stderr)
-        self.assertNotIn("Traceback", r.stderr)
+        r = sh(self.root, sys.executable, "agents/gepeto/run_auto.py", env={**os.environ})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["provider"], "none")
+        self.assertEqual(len(self.acp.pending_for("gepeto")), 1)
+
+    def test_paid_or_remote_providers_refused(self):
+        for p in ("openai", "api", "gemini"):
+            r = sh(self.root, sys.executable, "agents/gepeto/run_auto.py", "--provider", p, env={**os.environ})
+            self.assertEqual(r.returncode, 2, p)
+            self.assertIn("REFUZAT", r.stderr)
+        cfg = json.loads((self.root / "protocol" / "config.json").read_text())
+        cfg["gepeto_auto"]["local"]["endpoint"] = "https://api.exemplu.com/v1/chat/completions"
+        (self.root / "protocol" / "config.json").write_text(json.dumps(cfg))
+        r = sh(self.root, sys.executable, "agents/gepeto/run_auto.py", "--provider", "local", env={**os.environ})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("localhost", r.stderr)
+
+    def test_chatgpt_reply_template_roundtrip(self):
+        """Gepeto from ChatGPT copies the template from inbox/gepeto.md; Adrian commits it; it is valid."""
+        a = self.acp
+        m = a.new_message("claudiu", "gepeto", "Întrebare reală", "Ce alegem?", runtime="claude-code")
+        base = self.commit("claudiu")
+        inbox = (self.root / "inbox" / "gepeto.md").read_text()
+        path = re.search(r"`(messages/\d{4}/\d{2}/M-[^`]+\.md)`", inbox).group(1)
+        tpl = re.search(r"~~~markdown\n(.*?)~~~", inbox, re.S).group(1)
+        self.assertIn(f"in_reply_to: {m['id']}", tpl)
+        text = tpl.replace("(Gepeto scrie aici răspunsul.)", "Alegem varianta B.").replace("\n", "\r\n")
+        (self.root / path).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / path).write_bytes(text.encode("utf-8"))
+        self.commit("gepeto din chatgpt", author="Adrian")
+        self.assertEqual(self.guard(base, "Adriancu91"), [])
+        self.assertEqual(a.validate(), [])
+        pend = a.pending_for("claudiu")
+        self.assertEqual(len(pend), 1)
+        got = a.find_message(pend[0]["message"])
+        self.assertEqual((got["runtime"], got["in_reply_to"]), ("chatgpt-ui", m["id"]))
+        self.assertIn("varianta B", got["body"])
 
     def test_views_show_needs_adrian(self):
         a = self.acp
@@ -56,12 +90,10 @@ class ProtocolTest(RepoCase):
     def test_costs_report(self):
         a = self.acp
         month = a.iso(a.now_utc())[:7]
-        for kind, cid, cost in [("reservation", "c1", 0.01), ("actual", "c1", 0.002),
-                                ("reservation", "c2", 0.01), ("failed", "c2", 0.01)]:
-            a.append_jsonl(a.USAGE, {"ts": f"{month}-05T00:00:00Z", "kind": kind, "call_id": cid, "model": "gpt-6-luna",
-                                     "thread": "t", "input_tokens": 1000, "output_tokens": 100, "cost_usd": cost})
-        u = a.month_usage(month)
-        self.assertAlmostEqual(u["total"], 0.002 + 0.01)  # c2: reservation + failed = one call
+        a.new_message("claudiu", "gepeto", "Q", "x", runtime="claude-code")
+        a.append_jsonl(a.USAGE, {"ts": f"{month}-05T00:00:00Z", "kind": "local-call", "agent": "gepeto",
+                                 "model": "qwen2.5:7b-instruct", "thread": "t", "cost_usd": 0})
         rep = a.costs_report(month)
-        self.assertIn("gpt-6-luna", rep)
-        self.assertIn("nu e o garanție absolută", rep)
+        self.assertIn("Buget API: **0 USD**", rep)
+        self.assertIn("Apeluri la modelul local (gratuit): 1", rep)
+        self.assertIn("claudiu: 1", rep)

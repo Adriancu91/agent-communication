@@ -1,19 +1,17 @@
 name: gepeto
-# Gepeto-API, in two separate jobs:
-#   think   - runs the model. NO write rights. Produces a bundle (new files + appended lines only).
-#   publish - NO model. Applies the bundle with the trusted tools copied from main before anything else,
-#             checks identity/paths/history/secrets and pushes as Gepeto's own GitHub App.
-# Inactive until Adrian adds the secrets OPENAI_API_KEY, GEPETO_APP_PRIVATE_KEY and the variable GEPETO_APP_CLIENT_ID.
-# Until then only mode=sim (no model, labelled SIMULARE) can publish, as github-actions[bot].
+# Automatic Gepeto runner, OFF by default. The real Gepeto answers from ChatGPT (inbox/gepeto.md).
+# In GitHub's cloud only the test provider "sim" can run (no model, no secrets, no API, no cost).
+# Two separate jobs: think (no write rights) -> publish (no AI; trusted tools; generic identity,
+# which the guard allows to write only simulations).
 on:
-  push:
-    branches: [main]
-    paths: ["messages/**"]
   workflow_dispatch:
     inputs:
-      mode:
-        description: "api (real; needs OPENAI_API_KEY + Gepeto app) or sim (test, no model)"
-        default: "api"
+      provider:
+        description: "sim (test, fără model) sau none"
+        default: "sim"
+      target:
+        description: "ramura: main sau test/<nume>"
+        default: "main"
 
 permissions: {}
 
@@ -34,18 +32,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Run Gepeto-API
+      - name: Run the automatic Gepeto (test provider)
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          MODE_IN: ${{ inputs.mode || 'api' }}
+          PROVIDER: ${{ inputs.provider }}
         run: |
-          if [ -f protocol/PAUSE ]; then echo "Pauză activă."; exit 0; fi
-          case "$MODE_IN" in api|sim) ;; *) echo "mod necunoscut"; exit 1;; esac
-          if [ "$MODE_IN" = "api" ] && [ -z "$OPENAI_API_KEY" ]; then
-            echo "::notice::OPENAI_API_KEY lipsește: Gepeto-API nu e activ."; exit 0
-          fi
-          python3 agents/gepeto/run_openai.py --mode "$MODE_IN"
+          case "$PROVIDER" in sim|none) ;; *) echo "În cloud sunt permise doar sim și none."; exit 1 ;; esac
+          python3 agents/gepeto/run_auto.py --provider "$PROVIDER"
       - name: Bundle
         id: bundle
         run: |
@@ -68,9 +60,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
-      actions: write
-    env:
-      HAS_APP: ${{ vars.GEPETO_APP_CLIENT_ID != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -84,27 +73,11 @@ jobs:
         with:
           name: gepeto-bundle
           path: ${{ runner.temp }}/in
-      - name: Gepeto app token
-        id: app
-        if: env.HAS_APP == 'true'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ vars.GEPETO_APP_CLIENT_ID }}
-          private-key: ${{ secrets.GEPETO_APP_PRIVATE_KEY }}
-          permission-contents: write
       - name: Check and publish
         env:
-          APP_TOKEN: ${{ steps.app.outputs.token }}
-          APP_SLUG: ${{ steps.app.outputs.app-slug }}
-          FALLBACK_TOKEN: ${{ github.token }}
+          PUBLISH_TOKEN: ${{ github.token }}
+          PUBLISH_BRANCH: ${{ inputs.target }}
           REPO: ${{ github.repository }}
         run: |
           export ACP_ROOT="$GITHUB_WORKSPACE" ACP_CONFIG="$RUNNER_TEMP/trusted/config.json"
-          if [ -n "$APP_TOKEN" ]; then
-            export PUBLISH_TOKEN="$APP_TOKEN"; ACTOR="${APP_SLUG}[bot]"
-          else
-            export PUBLISH_TOKEN="$FALLBACK_TOKEN"; ACTOR="github-actions[bot]"
-          fi
-          python3 "$RUNNER_TEMP/trusted/publish.py" --agent gepeto --bundle "$RUNNER_TEMP/in/bundle.json" --actor "$ACTOR"
-          # Pushes made with the generic token do not start other workflows: hand over explicitly.
-          if [ -z "$APP_TOKEN" ]; then GH_TOKEN="$FALLBACK_TOKEN" gh workflow run claudiu.yml --ref main -R "$REPO"; fi
+          python3 "$RUNNER_TEMP/trusted/publish.py" --agent gepeto --bundle "$RUNNER_TEMP/in/bundle.json" --actor "github-actions[bot]"

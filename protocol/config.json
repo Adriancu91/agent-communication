@@ -1,10 +1,35 @@
 {
-  "protocol_version": "1.1",
+  "protocol_version": "1.2",
   "agents": {
-    "gepeto": {"role": "Director strategic", "runtimes": ["openai-api", "chatgpt-ui", "codex", "sim", "system"]},
-    "claudiu": {"role": "Director tehnic", "runtimes": ["claude-code", "sim", "system"]},
-    "adrian": {"role": "Proprietar (om)", "runtimes": ["human"]},
-    "system": {"role": "Automatizare (reguli, costuri)", "runtimes": ["system"]}
+    "gepeto": {
+      "role": "Director strategic",
+      "runtimes": [
+        "chatgpt-ui",
+        "local",
+        "sim",
+        "system"
+      ]
+    },
+    "claudiu": {
+      "role": "Director tehnic",
+      "runtimes": [
+        "claude-code",
+        "sim",
+        "system"
+      ]
+    },
+    "adrian": {
+      "role": "Proprietar (om)",
+      "runtimes": [
+        "human"
+      ]
+    },
+    "system": {
+      "role": "Automatizare (reguli, costuri)",
+      "runtimes": [
+        "system"
+      ]
+    }
   },
   "identities": {
     "_info": "Contul GitHub care a urcat schimbarea (din jurnalul de activitate GitHub, nu din numele autorului) -> principal. Numele aplicațiilor GitHub se completează la activare.",
@@ -15,48 +40,208 @@
   },
   "principals": {
     "gepeto": {
-      "write": ["messages/", "logs/events.jsonl", "logs/usage.jsonl", "memory/proposals/", "inbox/", "outbox/", "discussions/"],
-      "may_write_as": [{"from": "gepeto", "runtime_prefix": ["openai-api:", "system"]}]
+      "write": [
+        "messages/",
+        "logs/events.jsonl",
+        "logs/usage.jsonl",
+        "memory/proposals/",
+        "inbox/",
+        "outbox/",
+        "discussions/"
+      ],
+      "may_write_as": [
+        {
+          "from": "gepeto",
+          "runtime_prefix": [
+            "local:",
+            "system"
+          ]
+        }
+      ]
     },
     "claudiu": {
-      "write": ["messages/", "logs/events.jsonl", "inbox/", "outbox/", "discussions/", "decisions/DEC-", "tasks/", "research/", "memory/claudiu.md", "memory/proposals/"],
-      "may_write_as": [{"from": "claudiu", "runtime_prefix": ["claude-code", "system"]}]
+      "write": [
+        "messages/",
+        "logs/events.jsonl",
+        "inbox/",
+        "outbox/",
+        "discussions/",
+        "decisions/DEC-",
+        "tasks/",
+        "research/",
+        "memory/claudiu.md",
+        "memory/proposals/"
+      ],
+      "may_write_as": [
+        {
+          "from": "claudiu",
+          "runtime_prefix": [
+            "claude-code",
+            "system"
+          ]
+        }
+      ]
     },
     "automation": {
-      "write": ["messages/", "logs/", "inbox/", "outbox/", "discussions/", "protocol/PAUSE"],
-      "may_write_as": [{"from": "gepeto", "runtime_prefix": ["sim"]}, {"from": "claudiu", "runtime_prefix": ["sim"]}, {"from": "system", "runtime_prefix": ["system"]}]
+      "write": [
+        "messages/",
+        "logs/",
+        "inbox/",
+        "outbox/",
+        "discussions/",
+        "protocol/PAUSE"
+      ],
+      "may_write_as": [
+        {
+          "from": "gepeto",
+          "runtime_prefix": [
+            "sim"
+          ]
+        },
+        {
+          "from": "claudiu",
+          "runtime_prefix": [
+            "sim"
+          ]
+        },
+        {
+          "from": "system",
+          "runtime_prefix": [
+            "system"
+          ]
+        }
+      ]
     },
     "adrian": {
-      "write": ["*"],
-      "may_write_as": [{"from": "adrian", "runtime_prefix": ["human"]}, {"from": "gepeto", "runtime_prefix": ["chatgpt-ui", "sim"]}, {"from": "claudiu", "runtime_prefix": ["claude-code", "sim"]}]
+      "write": [
+        "*"
+      ],
+      "may_write_as": [
+        {
+          "from": "adrian",
+          "runtime_prefix": [
+            "human"
+          ]
+        },
+        {
+          "from": "gepeto",
+          "runtime_prefix": [
+            "chatgpt-ui",
+            "sim"
+          ]
+        },
+        {
+          "from": "claudiu",
+          "runtime_prefix": [
+            "claude-code",
+            "sim"
+          ]
+        }
+      ]
     }
   },
   "limits": {
     "max_auto_turns_per_thread": 8,
-    "max_messages_per_agent_per_day": 20,
+    "max_messages_per_agent_per_day": 10,
     "max_items_per_run": 3,
     "max_body_chars": 20000,
     "history_messages_in_context": 12,
-    "openai_monthly_budget_usd": 5,
-    "openai_stop_fraction": 0.9,
-    "openai_max_cost_per_call_usd": 0.05,
-    "openai_max_output_tokens": 4000
+    "max_output_tokens": 2000
   },
-  "priorities": ["low", "normal", "high", "urgent"],
-  "types": [
-    "message", "question", "proposal", "counterargument", "evaluation", "decision-request", "decision",
-    "task", "report", "memory-proposal", "ack", "escalation", "correction", "system"
+  "priorities": [
+    "low",
+    "normal",
+    "high",
+    "urgent"
   ],
-  "statuses": ["open", "answered", "accepted", "rejected", "blocked", "closed", "needs-adrian"],
-  "protected_paths": ["protocol/", ".github/", "tools/", "agents/", "tests/", "README.md", ".gitignore"],
-  "owner_only_paths": ["decisions/approvals/", "memory/gepeto.md", "memory/shared.md"],
-  "immutable_paths": ["messages/", "decisions/DEC-", "decisions/approvals/DEC-", "logs/costs/", "memory/proposals/"],
-  "append_only_files": ["logs/events.jsonl", "logs/usage.jsonl"],
+  "types": [
+    "message",
+    "question",
+    "proposal",
+    "counterargument",
+    "evaluation",
+    "decision-request",
+    "decision",
+    "task",
+    "report",
+    "memory-proposal",
+    "ack",
+    "escalation",
+    "correction",
+    "system"
+  ],
+  "statuses": [
+    "open",
+    "answered",
+    "accepted",
+    "rejected",
+    "blocked",
+    "closed",
+    "needs-adrian"
+  ],
+  "protected_paths": [
+    "protocol/",
+    ".github/",
+    "tools/",
+    "agents/",
+    "tests/",
+    "README.md",
+    ".gitignore"
+  ],
+  "owner_only_paths": [
+    "decisions/approvals/",
+    "memory/gepeto.md",
+    "memory/shared.md"
+  ],
+  "immutable_paths": [
+    "messages/",
+    "decisions/DEC-",
+    "decisions/approvals/DEC-",
+    "logs/costs/",
+    "memory/proposals/"
+  ],
+  "append_only_files": [
+    "logs/events.jsonl",
+    "logs/usage.jsonl"
+  ],
   "pause_file": "protocol/PAUSE",
   "r3_action_words": [
-    "cumpără", "cumpar", "plătește", "plateste", "achiziționează", "abonează", "cheltuie",
-    "publică", "publica pe", "lansează public", "deploy", "pune în producție", "șterge", "sterge",
-    "trimite email", "contactează clientul", "date de clienți", "datele clienților", "cheie api", "token",
-    "modifică regulile", "schimbă regulile", "dezactivează gardianul", "scoate pauza"
-  ]
+    "cumpără",
+    "cumpar",
+    "plătește",
+    "plateste",
+    "achiziționează",
+    "abonează",
+    "cheltuie",
+    "publică",
+    "publica pe",
+    "lansează public",
+    "deploy",
+    "pune în producție",
+    "șterge",
+    "sterge",
+    "trimite email",
+    "contactează clientul",
+    "date de clienți",
+    "datele clienților",
+    "cheie api",
+    "token",
+    "modifică regulile",
+    "schimbă regulile",
+    "dezactivează gardianul",
+    "scoate pauza"
+  ],
+  "billing": {
+    "paid_apis_allowed": false,
+    "_info": "Buget API = 0 USD (decizia lui Adrian, 7 nov 2026). Codul nu conține niciun furnizor plătit; adăugarea unuia cere PR îmbinat de Adrian și schimbarea acestei valori."
+  },
+  "gepeto_auto": {
+    "provider": "none",
+    "_info": "Gepeto automat e oprit: Gepeto răspunde din ChatGPT prin canalul din inbox/gepeto.md. Furnizori: none, sim (test), local (model pe calculatorul lui Adrian, gratuit, doar adrese localhost).",
+    "local": {
+      "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+      "model": "qwen2.5:7b-instruct",
+      "max_calls_per_day": 30
+    }
+  }
 }

@@ -8,7 +8,7 @@
 
 ## Fire oprite până aprobi tu (needs-adrian)
 
-- nimic
+- Aprobare G1–G5 și misiunea: finalizarea securității — `M-20261107T110614Z-gepeto-2594`
 
 ## Primite recent
 

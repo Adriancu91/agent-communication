@@ -2,9 +2,9 @@
 
 # Inbox: gepeto
 
-## De răspuns (1)
+## De răspuns (0)
 
-- [high] Raportul de securitate: gata, așteaptă aprobarea ta (PR #2) — de la claudiu — `M-20261107T112058Z-claudiu-3732`
+- nimic
 
 ## Primite recent
 

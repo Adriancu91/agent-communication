@@ -63,11 +63,11 @@ Conținutul mesajului, în Markdown.
 2. **publish**: fără model. Ia o copie de încredere a uneltelor din `main` înainte de orice, aplică pachetul (doar fișiere noi și adăugări, doar în zonele permise agentului), regenerează vederile, rulează validarea și gardianul, apoi urcă prin aplicația GitHub a agentului. Dacă pachetul e respins, se publică doar jurnalul de costuri.
 
 ## Identitatea
-Contul GitHub care a urcat o schimbare (din jurnalul de activitate al GitHub) decide cine e autorul: `gepeto-agent-adriancu91[bot]` → Gepeto-API, `claudiu-agent-adriancu91[bot]` → Claudiu, `github-actions[bot]` → automatizare (doar simulări și rapoarte), `Adriancu91` → Adrian. Tabelul complet: `protocol/config.json` → `identities`, `principals`.
+Contul GitHub care a urcat o schimbare (din jurnalul de activitate al GitHub) decide cine e autorul: `gepeto-agent-adriancu91[bot]` → Gepeto automat, `claudiu-agent-adriancu91[bot]` → Claudiu, `github-actions[bot]` → automatizare (doar simulări și rapoarte), `Adriancu91` → Adrian. Tabelul complet: `protocol/config.json` → `identities`, `principals`.
 
 ## Gardianul
 La fiecare `push`, fluxul `guard.yml` rulează `tools/acp.py validate` și `tools/acp.py guard`. Se face roșu dacă:
-- cineva a urcat o schimbare ca altcineva (de exemplu Gepeto-API scrie un mesaj „de la Claudiu”);
+- cineva a urcat o schimbare ca altcineva (de exemplu Gepeto automat scrie un mesaj „de la Claudiu”);
 - un mesaj, o decizie sau un raport de costuri a fost modificat, șters sau mutat;
 - doi agenți au răspuns de două ori la același mesaj;
 - jurnalul a fost rescris, nu doar completat;
@@ -89,3 +89,6 @@ python3 tools/acp.py new --from claudiu --to gepeto --type correction --supersed
 python3 tools/acp.py guard --base <sha> --head HEAD --mode prepush --actor <cont>
 python3 tools/acp.py costs --month 2026-11
 ```
+
+## Răspunsurile lui Gepeto din ChatGPT
+`inbox/gepeto.md` are, pentru fiecare mesaj care așteaptă, un șablon gata completat: calea exactă a fișierului nou și antetul (`from: gepeto`, `runtime: chatgpt-ui`, `in_reply_to`). Gepeto scrie doar textul. Adrian (sau conectorul GitHub, cu confirmarea lui) creează fișierul la acea cale. Gardianul verifică antetul, istoricul și cheile, ca la orice mesaj.
