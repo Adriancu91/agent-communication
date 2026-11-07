@@ -2,9 +2,12 @@
 // Routing uses the URL hash (#/proiecte), so the back button works and GitHub Pages never returns 404.
 import type { ComponentChildren, JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
+import { useClosedByNewerVersion, useStorageInfo } from "./data";
 import { setLang, useI18n, type Key, type Lang } from "./i18n";
 import { IconContinuity, IconLauncher, IconMemory, IconProjects, IconSettings } from "./icons";
 import { isStandalone, useOfflineState } from "./offline";
+import { ProjectPage, ProjectsScreen, TrashScreen } from "./projects";
+import { ToastHost } from "./widgets";
 
 type Route = "proiecte" | "memorie" | "continuitate" | "lansator" | "setari";
 
@@ -16,13 +19,20 @@ const TABS: { route: Route; label: Key; Icon: () => JSX.Element }[] = [
   { route: "setari", label: "tabSettings", Icon: IconSettings },
 ];
 
-function readRoute(): Route {
+/** #/proiecte, #/proiect/<id>, #/cos and the other tabs. Unknown addresses open the project list. */
+interface Location { route: Route; view: "list" | "project" | "trash" | "tab"; id?: string }
+
+function readRoute(): Location {
   const r = location.hash.replace(/^#\/?/, "");
-  return TABS.some((t) => t.route === r) ? (r as Route) : "proiecte";
+  const m = /^proiect\/(.+)$/.exec(r);
+  if (m) return { route: "proiecte", view: "project", id: decodeURIComponent(m[1]) };
+  if (r === "cos") return { route: "proiecte", view: "trash" };
+  if (r === "proiecte" || !TABS.some((t) => t.route === r)) return { route: "proiecte", view: "list" };
+  return { route: r as Route, view: "tab" };
 }
 
-function useRoute(): Route {
-  const [route, setRoute] = useState<Route>(readRoute);
+function useRoute(): Location {
+  const [route, setRoute] = useState<Location>(readRoute);
   useEffect(() => {
     const on = () => {
       setRoute(readRoute());
@@ -36,7 +46,9 @@ function useRoute(): Route {
 
 export function App(): JSX.Element {
   const { t } = useI18n();
-  const route = useRoute();
+  const loc = useRoute();
+  const route = loc.route;
+  const closed = useClosedByNewerVersion();
   return (
     <div class="shell">
       <nav class="tabbar" aria-label={t("nav")}>
@@ -55,12 +67,21 @@ export function App(): JSX.Element {
         ))}
       </nav>
       <main class="screen" id="main">
-        {route === "proiecte" && <Projects />}
+        {closed && (
+          <div class="card error-card" role="alert">
+            <p>{t("errBlocked")}</p>
+            <button type="button" class="button secondary small-button" onClick={() => location.reload()}>{t("reload")}</button>
+          </div>
+        )}
+        {loc.view === "list" && <ProjectsScreen />}
+        {loc.view === "project" && <ProjectPage id={loc.id!} key={loc.id} />}
+        {loc.view === "trash" && <TrashScreen />}
         {route === "memorie" && <Memory />}
         {route === "continuitate" && <Continuity />}
         {route === "lansator" && <Launcher />}
         {route === "setari" && <Settings />}
       </main>
+      <ToastHost />
     </div>
   );
 }
@@ -87,15 +108,6 @@ function Empty(props: { lead: string; hint: string; action?: string }): JSX.Elem
       )}
       <span class="badge" id="soon">{t("comingSoon")}</span>
     </div>
-  );
-}
-
-function Projects(): JSX.Element {
-  const { t } = useI18n();
-  return (
-    <Screen title={t("projectsTitle")}>
-      <Empty lead={t("projectsEmpty")} hint={t("projectsEmptyHint")} action={t("projectsNew")} />
-    </Screen>
   );
 }
 
@@ -155,6 +167,7 @@ function Settings(): JSX.Element {
         <h2>{t("privacyTitle")}</h2>
         <p>{t("privacyText")}</p>
       </div>
+      <StorageCard />
       <div class="card notice">
         <h2>{t("backupTitle")}</h2>
         <p>{t("backupText")}</p>
@@ -179,5 +192,22 @@ function Settings(): JSX.Element {
         {t("version")} {__APP_VERSION__}
       </p>
     </Screen>
+  );
+}
+
+function StorageCard(): JSX.Element {
+  const { t, lang } = useI18n();
+  const [info, ask] = useStorageInfo();
+  const text = info.persist === "persisted" ? t("persistOk") : info.persist === "not-persisted" ? t("persistNo") : info.persist ? t("persistUnsupported") : "";
+  const mb = info.used === null ? null : new Intl.NumberFormat(lang, { maximumFractionDigits: 1 }).format(info.used / 1048576) + " MB";
+  return (
+    <div class="card" data-persist={info.persist ?? "unknown"}>
+      <h2>{t("storageTitle")}</h2>
+      <p>{text}</p>
+      {mb && <p class="muted">{t("usedSpace")}: {mb}</p>}
+      {info.persist === "not-persisted" && (
+        <button type="button" class="button secondary small-button" onClick={() => void ask()}>{t("persistAsk")}</button>
+      )}
+    </div>
   );
 }
