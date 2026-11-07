@@ -151,3 +151,80 @@ Reparațiile 2, 4, 5, 6 și 7 au fost confirmate. Constatări noi:
 | 4 | Scriptul de bază prefera eticheta (mutabilă) commit-ului fix | mică | commit-ul fix întâi; eticheta doar dacă indică același commit |
 
 După reparații: **66 de teste unitare** trec.
+
+## Faza 7 și 9 — Raportul final de testare (7 nov. 2026, seara)
+
+### Linia de bază față de final
+| Suită | Început (`8510eb1`) | Final (`d8ec857`) |
+| --- | --- | --- |
+| Unitare (Vitest) | 26 / 5 fișiere | **66 / 6 fișiere** (memory.test.ts: 40) |
+| Browser (Playwright, 4 profiluri) | 72 trecute, 16 sărite | **159 trecute, 37 sărite, 0 eșuate** (196 de cazuri) |
+| Licențe | OK | OK (nicio dependență nouă; `package.json` și `package-lock.json` neschimbate) |
+| `npm audit` | 0 vulnerabilități | 0 vulnerabilități |
+
+**Testele sărite sunt intenționate:**
+- testele care pornesc browsere proprii (închidere/redeschidere, migrare, actualizare) rulează o dată pe motor, din profilul PC;
+- testul de tastatură rulează doar pe desktop;
+- limita reală de spațiu se poate micșora doar în Chromium;
+- WebKit din Playwright nu rulează service workers în contextele obișnuite.
+
+### Rulări
+1. **Copie curată 1 (`d8ec857`):** `npm ci --ignore-scripts`, `node scripts/build-aiw02-baseline.mjs`, `npm run verify`. Ieșire 0: 66 unitare, 159 browser.
+2. **Copie curată 2** (același commit, `node_modules`, `dist`, `.baseline` și `test-results` șterse, totul reinstalat). Ieșire 0: 66 unitare, 159 browser.
+3. **GitHub Actions pe `d8ec857`:**
+   - `app`: succes (inclusiv construirea AIW-02 și testul de migrare);
+   - `guard`: succes.
+4. O rulare anterioară, înaintea reparațiilor (`3450994`), a avut un eșec în CI: defectul componentei offline la actualizare. A fost reparat și acoperit de un test nou.
+
+### Matricea dispozitivelor (toate **simulate**; niciun dispozitiv fizic)
+| Profil | Motor | Ce s-a verificat |
+| --- | --- | --- |
+| iPhone 15 | WebKit (motorul Safari) | toate ecranele, memoria, căutarea, propunerile, integritatea, contextul, tema întunecată, eroarea de scriere |
+| iPhone SE | WebKit | la fel, pe ecran mic (fără derulare laterală, ținte ≥ 44 px) |
+| Pixel 7 | Chromium | la fel |
+| PC 1366×800 | Chromium | la fel, plus tastatura |
+| Profil persistent Chromium | Chromium | închiderea browserului; offline real (rețea tăiată, cu probă inversă); migrarea AIW-02 → AIW-03; actualizarea N → N+1 |
+| Profil persistent iPhone 15 | WebKit | închiderea browserului; migrarea AIW-02 → AIW-03; actualizarea N → N+1 |
+
+**Pe un iPhone fizic nu s-a verificat nimic.** Lista de verificări manuale e în `AIW-03.md` §10.
+
+### Offline și două file
+- **Offline real** (Chromium): prima încărcare cu internet, browser închis complet, server oprit și orice conexiune forțată printr-un proxy inexistent, browser redeschis.
+  - Aplicația pornește, 0 cereri eșuate.
+  - Se creează un proiect și o intrare de memorie fără internet.
+  - Proba inversă: un profil gol nu deschide aplicația.
+- **Două file:** o intrare adăugată într-o filă apare în cealaltă (browser).
+- **Scrieri simultane:** 15 scrieri concurente din două „file” lasă jurnalul valid (unitar).
+- **O verificare a integrității în timpul unei scrieri din altă filă** nu dă alarmă falsă (unitar).
+
+### Integritatea (teste unitare + browser)
+| Situație | Rezultat |
+| --- | --- |
+| Editări legitime | verifică (ok) |
+| Bază nouă și bază migrată din AIW-02 real | verifică (ok) |
+| Versiune veche modificată | detectat (`contentModified`) |
+| Eveniment șters din mijloc | detectat (`gap`) |
+| Evenimente reordonate | detectat |
+| Ultimele evenimente tăiate | detectat prin punctul de control (`behind`) |
+| Intrare modificată direct în bază | detectat (`content:<id>`) |
+| Conținutul unei versiuni vechi „șters” pe ascuns, cât intrarea încă există | detectat (`erased:<id>`) |
+| Punctul de control lipsește | „verificare parțială” (nu „întreg”) |
+| **Limită:** jurnalul tăiat **și** punctul de control șters | nu poate fi detectat; documentat, testat ca limită, explicat în interfață |
+
+### Rețea și securitate
+- **Nicio cerere externă** în niciun test (verificat pe toate ecranele memoriei).
+- **Codul construit** nu conține funcții de rețea; singurul `fetch` e în componenta offline, doar spre propriul site.
+- **CSP** neschimbată.
+- **Textul utilizatorului** e afișat doar ca text; testat cu `<img onerror>` și `<script>`.
+- **Nicio dependență nouă.**
+- **`app.yml`:**
+  - doar `fetch-depth: 0` și pasul local care construiește AIW-02;
+  - drepturile rămân `contents: read`, fără secrete, fără publicare, acțiuni fixate pe SHA.
+
+### Ce NU s-a făcut (limite respectate)
+- fără îmbinări și fără modificări pe `main`;
+- fără publicare;
+- fără ramuri sau date șterse;
+- fără schimbări de setări;
+- fără API-uri, servicii plătite sau secrete;
+- încercarea de a urca o etichetă git a fost refuzată de proxy-ul sesiunii; nu s-a insistat, iar eticheta locală a fost ștearsă.
