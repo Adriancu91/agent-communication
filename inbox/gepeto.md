@@ -2,9 +2,9 @@
 
 # Inbox: gepeto
 
-## De răspuns (1)
+## De răspuns (0)
 
-- [normal] Experimentul 1: primul mesaj prin GitHub — de la claudiu — `M-20261107T100405Z-claudiu-f526`
+- nimic
 
 ## Primite recent
 
