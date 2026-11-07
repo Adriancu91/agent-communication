@@ -444,6 +444,24 @@ const ro = {
   rvUndecided: "{n} propuneri așteaptă alegerea ta.",
   se_relationLater: "O propunere care înlocuiește sau rezolvă ceva trebuie acceptată sau respinsă acum. Nimic nu s-a schimbat.",
   memPurgeAiNote: "Textul ei poate rămâne în răspunsul AI salvat în sesiune; se șterge complet odată cu proiectul.",
+  // AIW-05.1: one-tap hand-off
+  lnSend: "Trimite la {ai}",
+  lnSendPhone: "Se deschide meniul de partajare: alege aplicația AI (ChatGPT, Claude, Gemini…). Pachetul ajunge direct în conversație.",
+  lnSendComputer: "Un clic: pachetul e copiat și site-ul AI se deschide într-o filă nouă; acolo doar lipești (Ctrl+V).",
+  lnCopiedOpened: "Pachetul e copiat, iar {ai} s-a deschis într-o filă nouă: lipește-l ca prim mesaj (Ctrl+V).",
+  lnBackOneTap: "Când AI-ul a răspuns, apasă „Copiază” sub răspunsul lui, revino aici și apasă butonul de mai jos: aplicația citește răspunsul și găsește singură propunerile. Pe Android poți și să partajezi răspunsul direct către AI Workspace.",
+  lnBringBack: "Am copiat răspunsul — adaugă-l",
+  rcTitle: "Răspuns primit",
+  rcNothing: "Nu a fost primit niciun text.",
+  rcNoSession: "Nu ai nicio sesiune deschisă căreia să-i adaugi răspunsul.",
+  rcChoose: "Adaugă-l la sesiunea:",
+  rcDiscard: "Renunță",
+  ssAwaiting: "Aștept răspunsul de la {ai}.",
+  ssAwaitingHint: "În aplicația AI apasă „Copiază” sub răspuns, apoi „Adaugă răspunsul AI” aici. Pe Android poți partaja răspunsul direct către AI Workspace.",
+  rvPasteClipboard: "Lipește răspunsul copiat",
+  rvClipboardEmpty: "Nu am găsit niciun text copiat. Copiază răspunsul în aplicația AI sau lipește-l mai jos.",
+  rvAcceptAllSave: "Acceptă tot ce e nou și salvează",
+  rvStillUndecided: "Unele propuneri seamănă cu ce ai deja și propun o relație: alege pentru ele „Acceptă” sau „Respinge”, apoi salvează.",
 } as const;
 
 export type Key = keyof typeof ro;
@@ -891,6 +909,24 @@ const en: Record<Key, string> = {
   rvUndecided: "{n} proposals are waiting for your choice.",
   se_relationLater: "A proposal that replaces or resolves something must be accepted or rejected now. Nothing changed.",
   memPurgeAiNote: "Its text may remain in the AI reply saved in the session; it is fully erased with the project.",
+  // AIW-05.1: one-tap hand-off
+  lnSend: "Send to {ai}",
+  lnSendPhone: "The share menu opens: choose the AI app. The package lands straight in the conversation.",
+  lnSendComputer: "One click: the package is copied and the AI site opens in a new tab; there you just paste (Ctrl+V).",
+  lnCopiedOpened: "The package is copied and {ai} opened in a new tab: paste it as the first message (Ctrl+V).",
+  lnBackOneTap: "When the AI has answered, tap “Copy” under its reply, come back here and tap the button below: the app reads the reply and finds the proposals by itself. On Android you can also share the reply straight to AI Workspace.",
+  lnBringBack: "I copied the reply — add it",
+  rcTitle: "Reply received",
+  rcNothing: "No text was received.",
+  rcNoSession: "You have no open session to add the reply to.",
+  rcChoose: "Add it to the session:",
+  rcDiscard: "Discard",
+  ssAwaiting: "Waiting for the reply from {ai}.",
+  ssAwaitingHint: "In the AI app tap “Copy” under the reply, then “Add the AI reply” here. On Android you can share the reply straight to AI Workspace.",
+  rvPasteClipboard: "Paste the copied reply",
+  rvClipboardEmpty: "No copied text found. Copy the reply in the AI app or paste it below.",
+  rvAcceptAllSave: "Accept everything new and save",
+  rvStillUndecided: "Some proposals resemble what you have and propose a relation: choose “Accept” or “Reject” for them, then save.",
 };
 
 export const DICTS: Record<Lang, Record<Key, string>> = { ro, en };

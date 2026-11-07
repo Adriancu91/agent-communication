@@ -13,6 +13,7 @@ import { buildPack, DEFAULT_PACK_LIMIT, PACK_LIMITS, parseReply, SessionError, t
 import { errorKey, lastProject, rememberProject, sessionStore, useMemory, useProjects } from "./data";
 import { fill, useDate, useI18n, type Key } from "./i18n";
 import { Dialog, toast } from "./widgets";
+import { canShareText, clearSharedText, readClipboard, readSharedText, setPendingReply, takePendingReply } from "./handoff";
 
 
 const oneKey = (c: Category) => `one_${c}` as Key;
@@ -149,24 +150,63 @@ export function Launcher(props: { projectId?: string; continues?: string }): JSX
     });
   }, [chosen, entries, links, memLoading, lang, assistant, task, history, maxChars, includeClosed]);
 
-  const start = async (how: "copy" | "download") => {
-    if (!chosen || !pack) return;
-    setBusy(true);
-    setError(null);
+  // the package's fingerprint is ready before the tap: sharing must start inside the tap itself
+  const [packSha, setPackSha] = useState<string | null>(null);
+  useEffect(() => {
+    setPackSha(null);
+    if (!pack) return;
+    let alive = true;
+    void sha256(pack.text).then((h) => alive && setPackSha(h));
+    return () => void (alive = false);
+  }, [pack?.text]);
+
+  const record = async (copied: boolean, text: string) => {
+    if (!chosen || !pack || !packSha) return;
     try {
-      // the session is recorded first (with the package's fingerprint), then the text leaves the app
       const session = await sessionStore.start(chosen.id, { provider, providerName, task, continues: continues?.id ?? null },
-        { sha256: await sha256(pack.text), chars: pack.text.length, refs: pack.refs });
+        { sha256: packSha, chars: text.length, refs: pack.refs });
       rememberProject(chosen.id);
-      let copied = false;
-      if (how === "copy") copied = await copyText(pack.text);
-      else downloadText(`context-${slug(chosen.name)}.md`, pack.text);
-      setStarted({ session, copied, text: pack.text });
+      setStarted({ session, copied, text });
     } catch (e) {
       setError(t(errorKey(e)));
     } finally {
       setBusy(false);
     }
+  };
+
+  /** One tap: the share sheet on phones (choose the AI app), copy + the AI site in a new tab on computers. */
+  const send = () => {
+    if (!chosen || !pack || !packSha) return;
+    const text = pack.text;
+    setBusy(true);
+    setError(null);
+    if (canShareText()) {
+      navigator.share({ text }).then(
+        () => void record(false, text),
+        (e: unknown) => {
+          if ((e as { name?: string })?.name === "AbortError") return setBusy(false); // closed: nothing started
+          void copyText(text).then((ok) => record(ok, text)); // share refused: copy instead
+        },
+      );
+      return;
+    }
+    const copying = copyText(text);
+    const url = providerUrl(provider);
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
+    void copying.then((ok) => record(ok, text));
+  };
+
+  const download = () => {
+    if (!chosen || !pack) return;
+    setBusy(true);
+    downloadText(`context-${slug(chosen.name)}.md`, pack.text);
+    void record(false, pack.text);
+  };
+
+  /** Back from the AI app with the reply copied: one tap reads it and opens the review. */
+  const bringBack = async (sessionId: string) => {
+    setPendingReply(sessionId, (await readClipboard()) ?? "");
+    location.hash = sessionUrl(sessionId);
   };
 
   if (loading) return <section><h1 class="large-title">{t("launcherTitle")}</h1><p class="muted">{t("loading")}</p></section>;
@@ -266,9 +306,12 @@ export function Launcher(props: { projectId?: string; continues?: string }): JSX
             <p class="muted small-left">{fill(t("lnNothingSent"), { ai: assistant })}</p>
             {error && <p class="form-error" role="alert">{error}</p>}
             <div class="actions">
-              <button type="button" class="button" data-action="copy-pack" disabled={busy || (provider === "other" && !providerName.trim())} onClick={() => void start("copy")}>{t("lnCopyStart")}</button>
-              <button type="button" class="button secondary" data-action="download-pack" disabled={busy || (provider === "other" && !providerName.trim())} onClick={() => void start("download")}>{t("lnDownloadStart")}</button>
+              <button type="button" class="button" data-action="send-pack" disabled={busy || !packSha || (provider === "other" && !providerName.trim())} onClick={send}>
+                {fill(t("lnSend"), { ai: assistant })}
+              </button>
+              <button type="button" class="button secondary" data-action="download-pack" disabled={busy || !packSha || (provider === "other" && !providerName.trim())} onClick={download}>{t("lnDownloadStart")}</button>
             </div>
+            <p class="muted small-left">{t(canShareText() ? "lnSendPhone" : "lnSendComputer")}</p>
           </>
         )}
       </div>
@@ -276,21 +319,24 @@ export function Launcher(props: { projectId?: string; continues?: string }): JSX
       {started && (
         <div class="card step-card notice" data-step="work" data-session={started.session.id}>
           <h2>5. {fill(t("lnStepWork"), { ai: assistant })}</h2>
-          {started.copied ? <p data-copied>✓ {t("lnCopied")}</p> : (
+          {started.copied && <p data-copied>✓ {fill(t("lnCopiedOpened"), { ai: assistant })}</p>}
+          {!started.copied && !canShareText() && (
             <>
               <p>{t("lnCopyManual")}</p>
               <textarea class="manual-copy" readOnly rows={6} value={started.text} onFocus={(e) => (e.target as HTMLTextAreaElement).select()} />
             </>
           )}
           {url && (
-            <a class="button link-button" href={url} target="_blank" rel="noopener noreferrer" data-action="open-ai">
+            <a class="button secondary link-button" href={url} target="_blank" rel="noopener noreferrer" data-action="open-ai">
               {fill(t("lnOpenAi"), { ai: assistant })} ↗
             </a>
           )}
-          <p class="muted small-left">{t("lnPasteHint")}</p>
           <h2>6. {t("lnStepBack")}</h2>
-          <p class="small-left">{t("lnBackText")}</p>
-          <a class="button secondary link-button" href={sessionUrl(started.session.id)} data-action="open-session">{t("lnOpenSession")}</a>
+          <p class="small-left">{t("lnBackOneTap")}</p>
+          <div class="actions">
+            <button type="button" class="button" data-action="bring-back" onClick={() => void bringBack(started.session.id)}>{t("lnBringBack")}</button>
+            <a class="button secondary link-button" href={sessionUrl(started.session.id)} data-action="open-session">{t("lnOpenSession")}</a>
+          </div>
         </div>
       )}
     </section>
@@ -340,6 +386,54 @@ export function ContinuityScreen(): JSX.Element {
   );
 }
 
+// ---------- Received through the share sheet (Android) ----------
+
+export function ReceiveScreen(): JSX.Element {
+  const { t } = useI18n();
+  const date = useDate();
+  const { sessions, loading } = useSessions();
+  const { projects } = useProjects();
+  const text = readSharedText();
+  const byId = new Map(projects.map((p) => [p.id, p]));
+  const open = sessions.filter((s) => s.status === "open" && byId.has(s.projectId) && !byId.get(s.projectId)!.deletedAt);
+  const attach = (sessionId: string) => {
+    setPendingReply(sessionId, text ?? "");
+    clearSharedText();
+    location.hash = sessionUrl(sessionId);
+  };
+  return (
+    <section data-receive>
+      <h1 class="large-title">{t("rcTitle")}</h1>
+      {!text ? <div class="card empty"><p class="lead">{t("rcNothing")}</p></div> : (
+        <>
+          <div class="card"><p class="pre muted" data-received>{text.length > 400 ? text.slice(0, 400) + "…" : text}</p></div>
+          {loading ? <p class="muted">{t("loading")}</p> : open.length === 0 ? (
+            <div class="card empty">
+              <p class="lead">{t("rcNoSession")}</p>
+              <a class="button link-button" href="#/lansator">{t("ctNew")}</a>
+            </div>
+          ) : (
+            <>
+              <h2 class="section-title">{t("rcChoose")}</h2>
+              <ul class="list">
+                {open.map((s) => (
+                  <li key={s.id} class="row" data-receive-session={s.id}>
+                    <button type="button" class="row-main as-button" onClick={() => attach(s.id)}>
+                      <span class="row-name">{assistantName(s)} · {byId.get(s.projectId)!.name}</span>
+                      <span class="row-meta">{t("updatedOn")} {date(s.updatedAt)}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          <button type="button" class="button secondary" onClick={() => { clearSharedText(); location.hash = "#/continuitate"; }}>{t("rcDiscard")}</button>
+        </>
+      )}
+    </section>
+  );
+}
+
 // ---------- Session page ----------
 
 export function SessionPage(props: { id: string }): JSX.Element {
@@ -350,8 +444,22 @@ export function SessionPage(props: { id: string }): JSX.Element {
   const s = sessions.find((x) => x.id === props.id);
   const project = projects.find((p) => p.id === s?.projectId);
   const steps = useSteps(props.id);
-  const { entries } = useMemory(s?.projectId ?? null);
+  const { entries, loading: memLoading } = useMemory(s?.projectId ?? null);
   const [dlg, setDlg] = useState<"reply" | "note" | null>(null);
+  const [initial, setInitial] = useState<string>("");
+  // a reply brought from the launcher, the share sheet or the clipboard opens the review at once
+  useEffect(() => {
+    const text = takePendingReply(props.id);
+    if (text !== null) {
+      setInitial(text);
+      setDlg("reply");
+    }
+  }, [props.id]);
+  const addReply = async () => {
+    setInitial((await readClipboard()) ?? "");
+    setDlg("reply");
+  };
+  const awaiting = !!steps?.length && steps[steps.length - 1].kind === "sent";
   const byId = new Map(entries.map((e) => [e.id, e]));
   const prev = s?.continues ? sessions.find((x) => x.id === s.continues) : undefined;
   const writable = !!s && s.status === "open" && !!project && !project.deletedAt;
@@ -376,11 +484,17 @@ export function SessionPage(props: { id: string }): JSX.Element {
         {t("createdOn")} {date(s.createdAt)} · <span class="tag" data-status={s.status}>{t(s.status === "open" ? "ssOpen" : "ssClosed")}</span>
         {prev ? <> · <a href={sessionUrl(prev.id)}>{fill(t("ssContinues"), { ai: assistantName(prev) })}</a></> : null}
       </p>
+      {writable && awaiting && (
+        <div class="card notice" data-awaiting>
+          <p><strong>{fill(t("ssAwaiting"), { ai: assistantName(s) })}</strong></p>
+          <p class="muted small-left">{t("ssAwaitingHint")}</p>
+        </div>
+      )}
       {s.task && <div class="card"><h2>{t("lnStepTask")}</h2><p class="pre">{s.task}</p></div>}
 
       {writable && (
         <div class="actions">
-          <button type="button" class="button" data-action="add-reply" onClick={() => setDlg("reply")}>{t("ssAddReply")}</button>
+          <button type="button" class="button" data-action="add-reply" onClick={() => void addReply()}>{t("ssAddReply")}</button>
           <button type="button" class="button secondary" data-action="add-note" onClick={() => setDlg("note")}>{t("ssAddNote")}</button>
           <a class="button secondary link-button" href={`#/lansator/${encodeURIComponent(project.id)}/${encodeURIComponent(s.id)}`} data-action="continue-elsewhere">{t("ssContinueElsewhere")}</a>
           <button type="button" class="button secondary" data-action="close-session" onClick={() => run(() => sessionStore.close(s.id), "ssClosedToast")}>{t("ssClose")}</button>
@@ -426,7 +540,8 @@ export function SessionPage(props: { id: string }): JSX.Element {
       </ol>
 
       {dlg === "note" && <NoteDialog sessionId={s.id} onClose={() => setDlg(null)} />}
-      {dlg === "reply" && <ReplyDialog session={s} entries={entries} steps={steps ?? []} onClose={() => setDlg(null)} />}
+      {/* the review compares with the memory and resolves the package's references: it waits until both are loaded */}
+      {dlg === "reply" && steps !== null && !memLoading && <ReplyDialog session={s} entries={entries} steps={steps ?? []} initialText={initial} onClose={() => setDlg(null)} />}
     </section>
   );
 }
@@ -463,9 +578,9 @@ function NoteDialog(props: { sessionId: string; onClose: () => void }): JSX.Elem
 
 interface Item extends ProposalDraft { verdict: Verdict | null; editedTitle: string; editedBody: string; editedCategory: Category; keepRelation: boolean }
 
-function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: Exchange[]; onClose: () => void }): JSX.Element {
+function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: Exchange[]; initialText?: string; onClose: () => void }): JSX.Element {
   const { t } = useI18n();
-  const [text, setText] = useState("");
+  const [text, setText] = useState(props.initialText ?? "");
   const [parsed, setParsed] = useState<ParsedReply | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [busy, setBusy] = useState(false);
@@ -476,8 +591,9 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
   // the references of the latest package sent in this session (D1 → the entry it meant)
   const refs = [...props.steps].reverse().find((x) => x.kind === "sent")?.pack?.refs ?? {};
 
-  const analyse = () => {
-    const r = parseReply(text, refs, props.entries);
+  const analyse = (source = text) => {
+    setText(source);
+    const r = parseReply(source, refs, props.entries);
     setParsed(r);
     setItems(r.proposals.map((p) => ({
       // a proposal that replaces / resolves something must be decided now (no default); duplicates: reject
@@ -487,23 +603,48 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
     setError(null);
     setTimeout(() => top.current?.focus(), 0);
   };
-  const set = (key: string, change: Partial<Item>) => setItems((list) => list.map((x) => {
+  const set = (key: string, change: Partial<Item>) => (touched.current = true, setItems((list) => list.map((x) => {
     if (x.key !== key) return x;
     const next = { ...x, ...change };
     // "later" is not possible while a relation is kept
     if (next.verdict === "later" && next.keepRelation && hasRelation(next)) next.verdict = null;
     return next;
-  }));
+  })));
   const hasRelation = (x: Item) => !!((x.editedCategory === "decision" && x.replaces) || (x.editedCategory !== "issue" && x.resolves));
   const undecided = items.filter((x) => x.verdict === null).length;
   const counts = { accept: items.filter((x) => x.verdict === "accept").length, reject: items.filter((x) => x.verdict === "reject").length, later: items.filter((x) => x.verdict === "later").length };
 
-  const save = async () => {
+  // a reply that arrived already (share sheet / clipboard) is analysed at once, and again if the memory
+  // or the session's steps finish loading afterwards (as long as the person has not changed anything yet)
+  const touched = useRef(false);
+  useEffect(() => {
+    if (!touched.current && (parsed || props.initialText?.trim())) analyse(parsed ? text : props.initialText!);
+  }, [props.entries, props.steps]);
+  const pasteClipboard = async () => {
+    const c = await readClipboard();
+    if (c) analyse(c);
+    else setError(t("rvClipboardEmpty"));
+  };
+
+  /** One tap: every new proposal accepted, duplicates rejected, the rest left to decide; then saved. */
+  const acceptAllAndSave = () => {
+    touched.current = true;
+    const next = items.map((x) => {
+      if (x.match === "duplicate" || x.notes.includes("duplicateInReply")) return { ...x, verdict: "reject" as Verdict };
+      if (x.match === "new") return { ...x, verdict: "accept" as Verdict };
+      return x.verdict === null && x.keepRelation && hasRelation(x) ? x : { ...x, verdict: x.verdict ?? ("later" as Verdict) };
+    });
+    setItems(next);
+    if (next.some((x) => x.verdict === null)) return setError(t("rvStillUndecided"));
+    void save(next);
+  };
+
+  const save = async (list: Item[] = items) => {
     setBusy(true);
     setError(null);
     setErrorItem(null);
     try {
-      await sessionStore.applyReply(props.session.id, text, items.map((x) => {
+      await sessionStore.applyReply(props.session.id, text, list.map((x) => {
         const changed = x.editedTitle !== x.title || x.editedBody !== x.body;
         const decisionRel = x.editedCategory === "decision" && x.keepRelation ? x.replaces : null;
         const resolveRel = x.editedCategory !== "issue" && x.keepRelation ? x.resolves : null;
@@ -514,14 +655,15 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
         };
       }));
       props.onClose();
-      toast({ text: fill(t("rvSaved"), { a: String(counts.accept), r: String(counts.reject), l: String(counts.later) }) });
+      const c = { a: list.filter((x) => x.verdict === "accept").length, r: list.filter((x) => x.verdict === "reject").length, l: list.filter((x) => x.verdict === "later").length };
+      toast({ text: fill(t("rvSaved"), { a: String(c.a), r: String(c.r), l: String(c.l) }) });
     } catch (e) {
       setError(t(errorKey(e)));
       // point at the proposal that could not be saved
       const i = e instanceof SessionError ? e.item : undefined;
-      if (i !== undefined && items[i]) {
-        setErrorItem(items[i].key);
-        setTimeout(() => document.querySelector(`[data-review-key="${items[i].key}"]`)?.scrollIntoView({ block: "center" }), 0);
+      if (i !== undefined && list[i]) {
+        setErrorItem(list[i].key);
+        setTimeout(() => document.querySelector(`[data-review-key="${list[i].key}"]`)?.scrollIntoView({ block: "center" }), 0);
       }
       setBusy(false);
     }
@@ -539,11 +681,13 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
       {!parsed ? (
         <>
           <p class="muted">{fill(t("rvPasteHint"), { ai: assistantName(props.session) })}</p>
+          <button type="button" class="button" data-action="paste-clipboard" onClick={() => void pasteClipboard()}>{t("rvPasteClipboard")}</button>
+          {error && <p class="form-error" role="alert">{error}</p>}
           <label class="field"><span>{t("rvPasteLabel")}</span>
-            <textarea name="reply" rows={8} value={text} autoFocus onInput={(e) => setText((e.target as HTMLTextAreaElement).value)} /></label>
+            <textarea name="reply" rows={8} value={text} onInput={(e) => setText((e.target as HTMLTextAreaElement).value)} /></label>
           <div class="sheet-actions">
             <button type="button" class="button secondary" onClick={props.onClose}>{t("cancel")}</button>
-            <button type="button" class="button" data-action="analyse" disabled={!text.trim()} onClick={analyse}>{t("rvAnalyse")}</button>
+            <button type="button" class="button secondary" data-action="analyse" disabled={!text.trim()} onClick={() => analyse()}>{t("rvAnalyse")}</button>
           </div>
         </>
       ) : (
@@ -554,9 +698,12 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
           </p>
           {parsed.blockInvalid && <p class="warn">{t("rvBlockInvalid")}</p>}
           <p class="muted small-left">{t("rvRule")}</p>
-          {items.length > 1 && (
+          {items.length > 0 && (
             <div class="actions">
-              <button type="button" class="button secondary small-button" data-action="accept-new" onClick={() => setItems((l) => l.map((x) => (x.match === "new" && !x.notes.includes("duplicateInReply") ? { ...x, verdict: "accept" } : x)))}>{t("rvAcceptNew")}</button>
+              <button type="button" class="button" data-action="accept-all-save" disabled={busy} onClick={acceptAllAndSave}>{t("rvAcceptAllSave")}</button>
+              {items.length > 1 && (
+                <button type="button" class="button secondary small-button" data-action="accept-new" onClick={() => (touched.current = true) && setItems((l) => l.map((x) => (x.match === "new" && !x.notes.includes("duplicateInReply") ? { ...x, verdict: "accept" } : x)))}>{t("rvAcceptNew")}</button>
+              )}
             </div>
           )}
           <ul class="import-list">
@@ -602,7 +749,7 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
           {undecided > 0 && <p class="muted small-left" data-undecided={undecided}>{fill(t("rvUndecided"), { n: String(undecided) })}</p>}
           <div class="sheet-actions">
             <button type="button" class="button secondary" onClick={() => setParsed(null)}>{t("rvBack")}</button>
-            <button type="button" class="button" data-action="save-review" disabled={busy || undecided > 0} onClick={save}>
+            <button type="button" class="button" data-action="save-review" disabled={busy || undecided > 0} onClick={() => void save()}>
               {items.length ? fill(t("rvSave"), { a: String(counts.accept), r: String(counts.reject), l: String(counts.later) }) : t("rvSaveOnly")}
             </button>
           </div>

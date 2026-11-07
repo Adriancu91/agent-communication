@@ -27,10 +27,26 @@ const REPLY = `Am verificat oferta. Prețul cuprului a crescut.
 ]
 \`\`\``;
 
-async function startSession(page: Page) {
+/**
+ * The share sheet and the clipboard are simulated (the real ones are system dialogs a test cannot drive):
+ * navigator.share records what was shared, the clipboard is a variable. Popups to AI sites are closed.
+ */
+test.beforeEach(async ({ context }) => {
+  await context.addInitScript(() => {
+    const w = window as unknown as { __shared: string[]; __clip: string };
+    w.__shared = [];
+    w.__clip = "";
+    Object.defineProperty(navigator, "share", { configurable: true, value: async (d: { text: string }) => void w.__shared.push(d.text) });
+    Object.defineProperty(navigator, "canShare", { configurable: true, value: () => true });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (t: string) => void (w.__clip = t), readText: async () => w.__clip } });
+  });
+  await context.route(/^https:\/\/(chatgpt\.com|claude\.ai|gemini\.google\.com)\//, (r) => r.fulfill({ status: 200, contentType: "text/html", body: "<title>AI</title>" }));
+});
+
+async function startSession(page: Page, provider: "claude" | "chatgpt" = "claude") {
   await page.goto("./#/lansator");
   await expect(page.locator('select[name="project"]')).toHaveValue(/P-/);
-  await page.locator('[data-provider="claude"]').click();
+  await page.locator(`[data-provider="${provider}"]`).click();
   await page.locator('textarea[name="task"]').fill("Actualizează prețul și pașii.");
   await page.locator('[data-step="pack"] summary', { hasText: "Vezi pachetul" }).click();
   const pack = page.locator("[data-pack]");
@@ -38,32 +54,50 @@ async function startSession(page: Page) {
   await expect(pack).toContainText("[D1] ★ Preț 4,2 lei/kg");
   await expect(pack).toContainText("Actualizează prețul și pașii.");
   await expect(pack).not.toContainText("Propunere încă neconfirmată"); // proposals are never handed over
-  await page.locator('[data-action="copy-pack"]').click();
-  const work = page.locator('[data-step="work"]');
-  await expect(work).toBeVisible();
-  // copied, or (if the browser refuses the clipboard) shown for copying by hand
-  await expect(work.locator("[data-copied], .manual-copy").first()).toBeVisible();
-  const open = work.locator('[data-action="open-ai"]');
-  await expect(open).toHaveAttribute("href", "https://claude.ai/new"); // only the provider's site, nothing in the address
-  await expect(open).toHaveAttribute("target", "_blank");
+  const touch = await page.evaluate(() => matchMedia("(pointer: coarse)").matches);
+  const popup = touch ? null : page.waitForEvent("popup");
+  // one tap: phones get the share sheet (choose the AI app), computers get copy + the AI site in a new tab
+  await page.locator('[data-action="send-pack"]').click();
+  await expect(page.locator('[data-step="work"]')).toBeVisible();
+  const sent = await page.evaluate(() => {
+    const w = window as unknown as { __shared: string[]; __clip: string };
+    return { __shared: w.__shared, __clip: w.__clip };
+  });
+  if (touch) {
+    expect(sent.__shared).toHaveLength(1);
+    expect(sent.__shared[0]).toContain("# Pachet de continuitate: Oferta Brăila");
+  } else {
+    const p = await popup!;
+    expect(p.url()).toBe(provider === "claude" ? "https://claude.ai/new" : "https://chatgpt.com/"); // nothing in the address
+    await p.close();
+    expect(sent.__clip).toContain("# Pachet de continuitate: Oferta Brăila");
+    await expect(page.locator("[data-copied]")).toBeVisible();
+  }
+  const open = page.locator('[data-step="work"] [data-action="open-ai"]');
   await expect(open).toHaveAttribute("rel", "noopener noreferrer");
-  await work.locator('[data-action="open-session"]').click();
-  await expect(page.locator("[data-session-page]")).toBeVisible();
 }
 
-test.beforeEach(async ({ context, browserName }) => {
-  if (browserName === "chromium") await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-});
+/** Back from the AI app: "Copy" there, one tap here. */
+async function bringBack(page: Page, reply: string) {
+  await page.evaluate((r) => { (window as unknown as { __clip: string }).__clip = r; }, reply);
+  await page.locator('[data-action="bring-back"]').click();
+  await expect(page.locator("[data-session-page]")).toBeVisible();
+  await expect(page.locator("#reply-dialog [data-found]")).toBeVisible(); // analysed at once
+}
+
+/** From the session page: one tap reads the copied reply. */
+async function addReply(page: Page, reply: string) {
+  await page.evaluate((r) => { (window as unknown as { __clip: string }).__clip = r; }, reply);
+  await page.locator('[data-action="add-reply"]').click();
+  await expect(page.locator("#reply-dialog [data-found]")).toBeVisible();
+}
 
 test("launcher → package → session → AI reply → review: only accepted proposals become official", async ({ page }) => {
   await setRo(page);
   const pid = await project(page);
   await startSession(page);
+  await bringBack(page, REPLY);
   await expect(page.locator('[data-kind="sent"]')).toContainText("Pachet de continuitate dat AI-ului");
-
-  await page.locator('[data-action="add-reply"]').click();
-  await page.locator('#reply-dialog textarea[name="reply"]').fill(REPLY);
-  await page.locator('[data-action="analyse"]').click();
   const dlg = page.locator("#reply-dialog");
   await expect(dlg.locator('[data-found="block"]')).toContainText("5 propuneri");
   // compared with the memory: "Trimite oferta" already exists → rejected by default
@@ -113,12 +147,9 @@ test("moving the work from Claude to ChatGPT: the second package carries the acc
   await setRo(page);
   await project(page);
   await startSession(page);
-  await page.locator('[data-action="add-reply"]').click();
-  await page.locator('#reply-dialog textarea[name="reply"]').fill(REPLY);
-  await page.locator('[data-action="analyse"]').click();
-  await page.locator('[data-action="accept-new"]').click();
-  await page.locator('[data-action="save-review"]').click();
-  await expect(page.locator(".toast")).toContainText("Salvat");
+  await bringBack(page, REPLY);
+  await page.locator('[data-action="accept-all-save"]').click(); // one tap: new accepted, duplicate rejected, saved
+  await expect(page.locator(".toast")).toContainText("Salvat: 4 acceptate, 1 respinse, 0 de decis");
 
   await page.locator('[data-action="continue-elsewhere"]').first().click();
   await expect(page.locator("[data-continues]")).toContainText("Claude");
@@ -136,7 +167,12 @@ test("moving the work from Claude to ChatGPT: the second package carries the acc
   await expect(pack).toContainText("Am verificat oferta. Prețul cuprului a crescut.");
   await expect(pack).toContainText("blocul de propuneri a fost scos");
   await expect(pack).not.toContainText('"tip": "pas", "titlu": "Trimite oferta"');
-  await page.locator('[data-action="copy-pack"]').click();
+  const touch = await page.evaluate(() => matchMedia("(pointer: coarse)").matches);
+  if (!touch) {
+    const [p] = await Promise.all([page.waitForEvent("popup"), page.locator('[data-action="send-pack"]').click()]);
+    expect(p.url()).toBe("https://chatgpt.com/");
+    await p.close();
+  } else await page.locator('[data-action="send-pack"]').click();
   await expect(page.locator('[data-action="open-ai"]')).toHaveAttribute("href", "https://chatgpt.com/");
   await page.locator('[data-action="open-session"]').click();
   await expect(page.locator("[data-session-page] h1")).toContainText("ChatGPT · Oferta Brăila");
@@ -150,9 +186,9 @@ test("a reply without the block: sections are read; an empty result can still be
   await setRo(page);
   await project(page);
   await startSession(page);
-  await page.locator('[data-action="add-reply"]').click();
-  await page.locator('#reply-dialog textarea[name="reply"]').fill("**Pași următori:**\n- Verifică stocul\n- Cere avans");
-  await page.locator('[data-action="analyse"]').click();
+  await page.locator('[data-action="open-session"]').click();
+  await expect(page.locator("[data-awaiting]")).toContainText("Aștept răspunsul de la Claude");
+  await addReply(page, "**Pași următori:**\n- Verifică stocul\n- Cere avans");
   await expect(page.locator('[data-found="sections"]')).toContainText("2 propuneri");
   await page.locator('[data-action="save-review"]').click();
   await expect(page.locator(".toast")).toContainText("0 acceptate, 0 respinse, 2 de decis");
@@ -160,7 +196,11 @@ test("a reply without the block: sections are read; an empty result can still be
   await page.locator('#note-form textarea[name="note"]').fill("Clientul vrea răspuns până vineri.");
   await page.locator('#note-form button[type="submit"]').click();
   await expect(page.locator('[data-kind="note"]')).toContainText("Clientul vrea răspuns până vineri.");
+  // nothing copied: the paste box opens, and the reply can also be pasted by hand
+  await page.evaluate(() => { (window as unknown as { __clip: string }).__clip = ""; });
   await page.locator('[data-action="add-reply"]').click();
+  await page.locator('[data-action="paste-clipboard"]').click();
+  await expect(page.locator("#reply-dialog [role=alert]")).toContainText("Nu am găsit niciun text copiat");
   await page.locator('#reply-dialog textarea[name="reply"]').fill("Mulțumesc, am înțeles.");
   await page.locator('[data-action="analyse"]').click();
   await expect(page.locator('[data-found="none"]')).toBeVisible();
@@ -185,11 +225,26 @@ test("the whole flow works without internet", async ({ page, context, browserNam
   await context.setOffline(true);
   await page.reload();
   await startSession(page);
-  await page.locator('[data-action="add-reply"]').click();
-  await page.locator('#reply-dialog textarea[name="reply"]').fill(REPLY);
-  await page.locator('[data-action="analyse"]').click();
-  await page.locator('[data-action="accept-new"]').click();
-  await page.locator('[data-action="save-review"]').click();
+  await bringBack(page, REPLY);
+  await page.locator('[data-action="accept-all-save"]').click();
   await expect(page.locator(".toast")).toContainText("Salvat");
   await context.setOffline(false);
+});
+
+test("Android share sheet: a reply shared into the app goes straight to the session's review", async ({ page }) => {
+  await setRo(page);
+  await project(page);
+  await startSession(page);
+  const sid = await page.locator('[data-step="work"]').getAttribute("data-session");
+  // the AI app shares the reply to AI Workspace: the app opens with it in the address
+  await page.goto("./?aiw_title=Claude&aiw_text=" + encodeURIComponent(REPLY));
+  await expect(page.locator("[data-receive]")).toBeVisible();
+  expect(new URL(page.url()).search).toBe(""); // the reply is removed from the address at once
+  await expect(page.locator("[data-received]")).toContainText("Am verificat oferta");
+  await page.locator(`[data-receive-session="${sid}"] button`).click();
+  await expect(page.locator('#reply-dialog [data-found="block"]')).toContainText("5 propuneri");
+  await page.locator('#reply-dialog [data-review="Preț 4,5 lei/kg"] [data-verdict="accept"]').click();
+  await page.locator('#reply-dialog [data-review="Certificatul ANPM a fost cerut"] [data-verdict="reject"]').click();
+  await page.locator('[data-action="save-review"]').click();
+  await expect(page.locator(".toast")).toContainText("Salvat: 1 acceptate");
 });

@@ -7,7 +7,7 @@ import { setLang, useI18n, type Key, type Lang } from "./i18n";
 import { IconContinuity, IconLauncher, IconMemory, IconProjects, IconSettings } from "./icons";
 import { isStandalone, useOfflineState } from "./offline";
 import { BackupCard } from "./backup";
-import { ContinuityScreen, Launcher, SessionPage } from "./continuity";
+import { ContinuityScreen, Launcher, ReceiveScreen, SessionPage } from "./continuity";
 import { ContextPreview, EntryPage, MemoryHistory, MemoryTab, ProjectMemory } from "./memory";
 import { ProjectPage, ProjectsScreen, TrashScreen } from "./projects";
 import { ToastHost } from "./widgets";
@@ -25,7 +25,7 @@ const TABS: { route: Route; label: Key; Icon: () => JSX.Element }[] = [
 /** #/proiecte, #/proiect/<id>, #/cos and the other tabs. Unknown addresses open the project list. */
 interface Location {
   route: Route;
-  view: "list" | "project" | "trash" | "tab" | "memory" | "entry" | "history" | "context" | "session" | "launch";
+  view: "list" | "project" | "trash" | "tab" | "memory" | "entry" | "history" | "context" | "session" | "launch" | "receive";
   id?: string;
   entry?: string;
 }
@@ -42,6 +42,7 @@ function readRoute(): Location {
     return { route: "memorie", view: "entry", id, entry: rest };
   }
   // AIW-05: a session page; the launcher opened for a project (and, optionally, the session it continues)
+  if (r === "primire") return { route: "continuitate", view: "receive" };
   const ses = /^sesiune\/([^/]+)$/.exec(r);
   if (ses) return { route: "continuitate", view: "session", id: decodeURIComponent(ses[1]) };
   const lau = /^lansator\/([^/]+)(?:\/([^/]+))?$/.exec(r);
@@ -106,6 +107,7 @@ export function App(): JSX.Element {
         {loc.view === "tab" && route === "memorie" && <MemoryTab />}
         {route === "continuitate" && loc.view === "tab" && <ContinuityScreen />}
         {loc.view === "session" && <SessionPage id={loc.id!} key={loc.id} />}
+        {loc.view === "receive" && <ReceiveScreen />}
         {route === "lansator" && <Launcher projectId={loc.id} continues={loc.entry} key={`${loc.id}|${loc.entry}`} />}
         {route === "setari" && <Settings />}
       </main>
