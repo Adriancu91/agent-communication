@@ -6,5 +6,9 @@
 
 - nimic
 
+## Fire oprite până aprobi tu (needs-adrian)
+
+- nimic
+
 ## Primite recent
 
