@@ -22,7 +22,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -75,17 +74,27 @@ jobs:
           else
             python3 "$RUNNER_TEMP/trusted/acp.py" guard --base "$BASE" --head HEAD --mode "$MODE" --activity-file "$RUNNER_TEMP/activity.json" --actor "$ACTOR"
           fi
-      - name: Wake Claudiu only if he has work (and only once activated)
-        if: github.event_name == 'push'
+
+  wake-claudiu:
+    # Separate job: the PR code and tests never run with the right to start workflows.
+    needs: guard
+    if: github.event_name == 'push' && vars.CLAUDIU_ACTIONS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Start Claudiu only if he has messages waiting
         env:
-          ENABLED: ${{ vars.CLAUDIU_ACTIONS_ENABLED }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          [ "$ENABLED" = "true" ] || { echo "Claudiu în GitHub Actions nu e activat."; exit 0; }
-          export ACP_ROOT="$GITHUB_WORKSPACE" ACP_CONFIG="$RUNNER_TEMP/trusted/config.json"
-          n=$(python3 "$RUNNER_TEMP/trusted/acp.py" pending --agent claudiu | python3 -c 'import json,sys;d=json.load(sys.stdin);print(0 if d["paused"] else len(d["items"]))')
-          if [ "$n" != "0" ]; then gh workflow run claudiu.yml --ref main -R "$REPO"; fi
+          n=$(python3 tools/acp.py pending --agent claudiu | python3 -c 'import json,sys;d=json.load(sys.stdin);print(0 if d["paused"] else len(d["items"]))')
+          if [ "$n" != "0" ]; then gh workflow run claudiu.yml --ref main -R "$REPO"; else echo "Nimic de făcut."; fi
 
   pause:
     needs: guard
