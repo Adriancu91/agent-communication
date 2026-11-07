@@ -7,6 +7,7 @@ import { MemoryCard } from "./memory";
 import { useDate, useI18n } from "./i18n";
 import { IconMore, IconPin } from "./icons";
 import { Confirm, Dialog, toast } from "./widgets";
+import { useExport } from "./backup";
 
 const SORT_KEY = "aiw.sort";
 const IOS_NOTICE_KEY = "aiw.iosNotice";
@@ -113,7 +114,7 @@ export function ProjectForm(props: { project?: Project; onClose: () => void; onS
 
 type Pending = { kind: "menu" | "edit" | "trash"; project: Project } | null;
 
-function ProjectDialogs(props: { pending: Pending; set: (p: Pending) => void; afterTrash?: () => void }): JSX.Element | null {
+function ProjectDialogs(props: { pending: Pending; set: (p: Pending) => void; afterTrash?: () => void; exportProject: (id: string) => Promise<void> }): JSX.Element | null {
   const { t } = useI18n();
   const run = useAction();
   const p = props.pending;
@@ -149,6 +150,10 @@ function ProjectDialogs(props: { pending: Pending; set: (p: Pending) => void; af
           close();
           await run(() => store.setPinned(p.project.id, !p.project.pinned));
         }}>{t(p.project.pinned ? "unpin" : "pin")}</button>
+        <button type="button" class="menu-item" data-action="export-project" onClick={() => {
+          close();
+          void props.exportProject(p.project.id);
+        }}>{t("exportProject")}</button>
         <button type="button" class="menu-item danger" onClick={() => props.set({ kind: "trash", project: p.project })}>{t("moveToTrash")}</button>
       </div>
       <div class="sheet-actions single">
@@ -168,6 +173,7 @@ export function ProjectsScreen(): JSX.Element {
   const [creating, setCreating] = useState(false);
   const [pending, setPending] = useState<Pending>(null);
   const [iosNotice, setIosNotice] = useState(() => isIOS() && !readPref(IOS_NOTICE_KEY));
+  const exp = useExport();
   const date = useDate();
 
   const active = projects.filter((p) => !p.deletedAt);
@@ -265,7 +271,8 @@ export function ProjectsScreen(): JSX.Element {
       </a>
 
       {creating && <ProjectForm onClose={() => setCreating(false)} />}
-      <ProjectDialogs pending={pending} set={setPending} />
+      <ProjectDialogs pending={pending} set={setPending} exportProject={(id) => exp.start([id])} />
+      {exp.dialog}
     </section>
   );
 }
@@ -278,6 +285,7 @@ export function ProjectPage(props: { id: string }): JSX.Element {
   const [pending, setPending] = useState<Pending>(null);
   const run = useAction();
   const date = useDate();
+  const exp = useExport();
   const p = projects.find((x) => x.id === props.id);
   useLayoutEffect(() => {
     // synchronous: the Memory tab must see this project as "last used" even if opened right away
@@ -315,6 +323,7 @@ export function ProjectPage(props: { id: string }): JSX.Element {
               <button type="button" class="button secondary" onClick={() => run(() => store.setPinned(p.id, !p.pinned))}>
                 {t(p.pinned ? "unpin" : "pin")}
               </button>
+              <button type="button" class="button secondary" data-action="export-project" onClick={() => void exp.start([p.id])}>{t("exportProject")}</button>
               <button type="button" class="button secondary danger-text" onClick={() => setPending({ kind: "trash", project: p })}>
                 {t("moveToTrash")}
               </button>
@@ -335,7 +344,8 @@ export function ProjectPage(props: { id: string }): JSX.Element {
           )}
         </>
       )}
-      <ProjectDialogs pending={pending} set={setPending} afterTrash={() => (location.hash = "#/proiecte")} />
+      <ProjectDialogs pending={pending} set={setPending} afterTrash={() => (location.hash = "#/proiecte")} exportProject={(id) => exp.start([id])} />
+      {exp.dialog}
     </section>
   );
 }

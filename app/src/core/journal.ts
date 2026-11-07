@@ -7,7 +7,14 @@ export type EventType = "project.created" | "project.renamed" | "project.updated
   // AIW-03: memory entries and the links between them
   | "memory.created" | "memory.edited" | "memory.important" | "memory.archived" | "memory.restored"
   | "memory.confirmed" | "memory.rejected" | "memory.status" | "memory.purged"
-  | "link.created" | "link.removed";
+  | "link.created" | "link.removed"
+  // AIW-04: a project arrived from an export archive; the events after it are its imported history
+  | "project.imported";
+
+export const EVENT_TYPES: readonly EventType[] = ["project.created", "project.renamed", "project.updated", "project.pinned",
+  "project.trashed", "project.restored", "project.purged", "memory.created", "memory.edited", "memory.important",
+  "memory.archived", "memory.restored", "memory.confirmed", "memory.rejected", "memory.status", "memory.purged",
+  "link.created", "link.removed", "project.imported"];
 
 export interface JournalEvent {
   seq: number;
@@ -42,6 +49,23 @@ function header(e: Pick<JournalEvent, "seq" | "ts" | "type" | "projectId" | "ent
   const h: Record<string, unknown> = { seq: e.seq, ts: e.ts, type: e.type, projectId: e.projectId, dataHash: e.dataHash, prev: e.prev };
   if (e.entityId !== undefined) h.entityId = e.entityId;
   return canonical(h);
+}
+
+/** The fingerprint an event must have, given its header fields (used to check imported history). */
+export function eventHash(e: Pick<JournalEvent, "seq" | "ts" | "type" | "projectId" | "entityId" | "dataHash" | "prev">): Promise<string> {
+  return sha256(header(e));
+}
+
+/**
+ * The events that describe a project as it is now: those from its latest import on (AIW-04).
+ * When a project is replaced by an imported copy, its older events stay in the journal (nothing is
+ * deleted and the chain stays verifiable) but no longer describe the current project.
+ */
+export function currentEvents<E extends Pick<JournalEvent, "seq" | "type" | "projectId">>(events: E[], projectId: string): E[] {
+  const own = events.filter((e) => e.projectId === projectId);
+  let from = 0;
+  for (const e of own) if (e.type === "project.imported" && e.seq > from) from = e.seq;
+  return own.filter((e) => e.seq >= from);
 }
 
 export async function makeEvent(prev: { seq: number; hash: string } | null, ts: string, type: EventType,

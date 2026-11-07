@@ -9,6 +9,8 @@ export interface PendingEvent {
   projectId: string;
   entityId?: string;
   data: Record<string, unknown>;
+  /** The event's own date, when it is not "now" (imported history keeps its original dates). */
+  ts?: string;
 }
 
 export interface WritePlan<T> {
@@ -119,7 +121,7 @@ export class JournaledStore {
         const events: JournalEvent[] = [];
         let prev: { seq: number; hash: string } | null = tail;
         for (const p of plan.events) {
-          const e = await makeEvent(prev, ts, p.type, p.projectId, p.data, p.entityId);
+          const e = await makeEvent(prev, p.ts ?? ts, p.type, p.projectId, p.data, p.entityId);
           events.push(e);
           prev = e;
         }

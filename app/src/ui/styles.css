@@ -305,3 +305,17 @@ p:last-child { margin-bottom: 0; }
 @media (prefers-reduced-motion: no-preference) {
   .tab, .segmented button { transition: background-color 0.15s, color 0.15s; }
 }
+
+/* AIW-04: export / import */
+.ok-line { font-weight: 600; margin: 0 0 4px; }
+.warn { color: var(--text); background: var(--notice); border: 1px solid var(--notice-line); border-radius: 10px; padding: 8px 10px; }
+.small-left.warn { margin: 6px 0; }
+.import-list { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 12px; }
+.import-item { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; background: var(--surface); }
+.import-item p { margin: 0 0 6px; }
+.segmented.choices { grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); margin-top: 8px; }
+.segmented.choices button { padding: 0 6px; font-size: 15px; }
+.import-contents { margin: 6px 0; }
+.import-contents summary { cursor: pointer; color: var(--accent); min-height: var(--tap); display: flex; align-items: center; }
+.warn .check { margin-top: 8px; }
+.warn p { margin: 0 0 8px; }
