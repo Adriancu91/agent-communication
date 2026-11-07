@@ -2,7 +2,7 @@
 // journal event(s) + new records in ONE transaction. Content versions live in the journal.
 import {
   checkEntry, checkLink, isOfficial, cleanBody, cleanTitle, isCategory, isEntryId, isLinkType, newEntryId, newLinkId, REASON_MAX,
-  statusFromLinks, charCount,
+  statusFromLinks, charCount, currentEvents,
   type Category, type EntryVersion, type JournalEvent, type LinkProblem, type LinkType, type MemoryEntry,
   type MemoryLink, type Project,
 } from "../core";
@@ -95,7 +95,7 @@ export class MemoryStore {
   async timeline(projectId: string): Promise<JournalEvent[]> {
     const all = await this.base.read(["events"], (tx) =>
       req(tx.objectStore("events").index("projectId").getAll(IDBKeyRange.only(projectId)) as IDBRequest<JournalEvent[]>));
-    return all.filter((e) => e.type.startsWith("memory.") || e.type.startsWith("link.")).sort((a, b) => a.seq - b.seq);
+    return currentEvents(all, projectId).filter((e) => e.type.startsWith("memory.") || e.type.startsWith("link.")).sort((a, b) => a.seq - b.seq);
   }
 
   /** All content versions of every entry of a project, read from the journal (oldest first). */
@@ -437,8 +437,9 @@ export class MemoryStore {
     const official = (id: string) => !!byId.get(id) && isOfficial(byId.get(id)!);
     const problems: string[] = [];
     const contentEvents = new Map<string, JournalEvent[]>();
-    for (const ev of events) {
-      if (ev.projectId !== projectId || !ev.entityId) continue;
+    const own = currentEvents(events, projectId); // a project replaced by an import: only its current history
+    for (const ev of own) {
+      if (!ev.entityId) continue;
       if (ev.type === "memory.created" || ev.type === "memory.edited") contentEvents.set(ev.entityId, [...(contentEvents.get(ev.entityId) ?? []), ev]);
     }
     for (const e of entries) {
@@ -448,7 +449,7 @@ export class MemoryStore {
       if (!last || last.version !== e.version || last.title !== e.title || last.body !== e.body) problems.push(`content:${e.id}`);
       if (e.status !== statusFromLinks(e.id, links, official)) problems.push(`status:${e.id}`);
     }
-    if (project && events.some((ev) => ev.projectId === projectId && !ev.entityId && ev.data === null)) problems.push(`erased:${projectId}`);
+    if (project && own.some((ev) => !ev.entityId && ev.data === null)) problems.push(`erased:${projectId}`);
     for (const l of links) if (!byId.has(l.from) || !byId.has(l.to)) problems.push(`link:${l.id}`);
     return { ...report, ok: report.ok && problems.length === 0, inconsistencies: problems };
   }
