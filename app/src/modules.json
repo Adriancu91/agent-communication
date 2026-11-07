@@ -5,7 +5,7 @@
   "storage": ["core"],
   "projects": ["core", "storage"],
   "memory": ["core", "storage"],
-  "continuity": ["core", "memory", "projects", "security"],
+  "continuity": ["core", "storage", "memory", "projects", "security"],
   "archive": ["core", "storage", "security"],
   "launcher": [],
   "ui": ["core", "security", "storage", "projects", "memory", "continuity", "archive", "launcher"]

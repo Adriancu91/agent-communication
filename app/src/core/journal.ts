@@ -9,12 +9,15 @@ export type EventType = "project.created" | "project.renamed" | "project.updated
   | "memory.confirmed" | "memory.rejected" | "memory.status" | "memory.purged"
   | "link.created" | "link.removed"
   // AIW-04: a project arrived from an export archive; the events after it are its imported history
-  | "project.imported";
+  | "project.imported"
+  // AIW-05: AI work sessions
+  | "session.created" | "session.exchange" | "session.closed" | "session.reopened";
 
 export const EVENT_TYPES: readonly EventType[] = ["project.created", "project.renamed", "project.updated", "project.pinned",
   "project.trashed", "project.restored", "project.purged", "memory.created", "memory.edited", "memory.important",
   "memory.archived", "memory.restored", "memory.confirmed", "memory.rejected", "memory.status", "memory.purged",
-  "link.created", "link.removed", "project.imported"];
+  "link.created", "link.removed", "project.imported",
+  "session.created", "session.exchange", "session.closed", "session.reopened"];
 
 export interface JournalEvent {
   seq: number;
