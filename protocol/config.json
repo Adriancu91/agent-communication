@@ -127,7 +127,8 @@
           "from": "gepeto",
           "runtime_prefix": [
             "chatgpt-ui",
-            "sim"
+            "sim",
+            "local:"
           ]
         },
         {

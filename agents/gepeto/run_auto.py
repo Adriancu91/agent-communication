@@ -81,7 +81,11 @@ def call_local(instructions: str, context: str) -> dict:
                "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": context}]}
     req = urllib.request.Request(CFG["local"]["endpoint"], data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=600) as r:
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
+    with opener.open(req, timeout=600) as r:
         data = json.loads(r.read())
     return json.loads(data["choices"][0]["message"]["content"])
 
@@ -131,7 +135,10 @@ def file_reply(item: dict, reply: dict, runtime: str) -> list[dict]:
                         f"{note}\n\nIntră în `memory/gepeto.md` doar dacă o acceptă Gepeto original sau Adrian.\n",
                         encoding="utf-8")
     if close:
-        acp.append_event({"event": "status", "thread": item["thread"], "status": "closed", "by": "gepeto"})
+        try:
+            acp.set_status(item["thread"], "closed", "gepeto")
+        except acp.Refused:
+            pass  # the thread waits for Adrian; it stays that way
     return written
 
 

@@ -1,7 +1,8 @@
 name: claudiu
 # Claudiu (Claude Code on Adrian's Claude subscription), in two separate jobs:
 #   think   - runs Claude Code. Read-only GitHub token, no network tools, Bash limited to the `acp`
-#             command, which runs from a root-owned copy Claude cannot edit and only writes as "claudiu".
+#             command, which runs from a root-owned copy and only writes as "claudiu". Claude may write
+#             files only in /tmp/acp (message drafts); everything in the repository goes through `acp`.
 #   publish - no model; same trusted publisher as Gepeto, pushing as Claudiu's own GitHub App.
 # Inactive until Adrian adds the secrets CLAUDE_CODE_OAUTH_TOKEN, CLAUDIU_APP_PRIVATE_KEY and the variable CLAUDIU_APP_CLIENT_ID.
 # Started only by the guard, after a push to main, when Claudiu has messages waiting and
@@ -25,7 +26,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write
     outputs:
       has_bundle: ${{ steps.bundle.outputs.has_bundle }}
     env:
@@ -34,6 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.target }}
           fetch-depth: 0
           persist-credentials: false
       - name: Work waiting?
@@ -52,6 +53,8 @@ jobs:
           sudo install -o root -g root -m 0644 tools/acp.py protocol/config.json /opt/acp/
           printf '#!/bin/sh\nexport ACP_AGENT=claudiu ACP_CONFIG=/opt/acp/config.json ACP_ROOT="%s"\nexec python3 /opt/acp/acp.py "$@"\n' "$GITHUB_WORKSPACE" | sudo tee /usr/local/bin/acp > /dev/null
           sudo chmod 0755 /usr/local/bin/acp
+          mkdir -p /tmp/acp
+          sha256sum .git/config > "$RUNNER_TEMP/gitconfig.sha"
       - name: Claudiu (Claude Code)
         if: steps.chk.outputs.n != '0'
         uses: anthropics/claude-code-action@61a9c274fa7110a66dfafc1bbbced03833eb25fe # v1.0.269
@@ -61,19 +64,25 @@ jobs:
           prompt: |
             Citește agents/claudiu/AUTOMATION.md și urmează-l exact.
             Rulezi în GitHub Actions, fără drepturi de scriere în GitHub: nu faci commit și nu faci push.
-            Folosești comanda `acp` (nu `python3 tools/acp.py`).
+            Folosești comanda `acp` (nu `python3 tools/acp.py`). Textul mesajelor lungi îl scrii întâi
+            într-un fișier din /tmp/acp/ și îl dai cu `acp new ... --body-file /tmp/acp/<nume>.md`.
           claude_args: >-
             --max-turns 30
-            --allowedTools "Bash(acp pending:*),Bash(acp thread:*),Bash(acp new:*),Bash(acp status:*),Read,Write,Edit,Glob,Grep"
-            --disallowedTools "WebFetch,WebSearch"
+            --allowedTools "Bash(acp pending:*),Bash(acp thread:*),Bash(acp new:*),Bash(acp status:*),Read,Glob,Grep,Write(//tmp/acp/**)"
+            --disallowedTools "WebFetch,WebSearch,Edit,NotebookEdit"
           settings: >-
             {"permissions": {"deny": ["Read(//proc/**)", "Read(//sys/**)", "Read(//etc/**)", "Read(//home/runner/.*)",
-            "Read(//home/runner/.*/**)", "Edit(//opt/**)", "Write(//opt/**)", "Edit(//usr/**)", "Write(//usr/**)"]}}
+            "Read(//home/runner/.*/**)", "Edit(//**)", "Write(//home/**)", "Write(//opt/**)", "Write(//usr/**)",
+            "Write(//etc/**)", "Write(//root/**)", "Write(//var/**)"]}}
       - name: Bundle
         id: bundle
         if: steps.chk.outputs.n != '0'
         run: |
-          mkdir -p "$RUNNER_TEMP/out"
+          sha256sum -c --quiet "$RUNNER_TEMP/gitconfig.sha" || { echo "::error::.git/config a fost schimbat în timpul rulării."; exit 1; }
+          mkdir -p "$RUNNER_TEMP/out" "$RUNNER_TEMP/home"
+          export HOME="$RUNNER_TEMP/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false \
+                 GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null GIT_CONFIG_KEY_2=core.attributesFile GIT_CONFIG_VALUE_2=/dev/null
           set +e; python3 /opt/acp/acp.py bundle --out "$RUNNER_TEMP/out/bundle.json"; rc=$?; set -e
           if [ "$rc" = "3" ]; then echo "has_bundle=false" >> "$GITHUB_OUTPUT"; exit 0; fi
           [ "$rc" = "0" ] || exit "$rc"

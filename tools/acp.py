@@ -431,6 +431,55 @@ def attribution_from_activity(activities: list[dict], ref: str = "refs/heads/mai
     return mapping, errs
 
 
+def allowed_by(principal: str) -> set[str]:
+    """Names a principal may sign events with (same as the 'from' it may write messages as)."""
+    return {r["from"] for r in CONFIG["principals"][principal]["may_write_as"]}
+
+
+def check_new_events(old: str, new: str, principal: str) -> list[str]:
+    """Each appended event line must be valid JSON, signed by a name the pusher may use, and only
+    Adrian may take a thread out of 'needs-adrian'."""
+    errs = []
+    state: dict[str, str] = {}
+    for line in old.splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("event") == "status":
+            state[ev.get("thread")] = ev.get("status")
+        elif ev.get("event") == "sent" and ev.get("thread") not in state:
+            state[ev.get("thread")] = "open"
+    for line in new[len(old):].splitlines():
+        if not line.strip():
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            errs.append("linie invalidă în logs/events.jsonl")
+            continue
+        by = ev.get("by")
+        if by not in allowed_by(principal):
+            errs.append(f"eveniment semnat „{by}” de {principal} — uzurpare de identitate")
+        if ev.get("event") == "status":
+            t = ev.get("thread")
+            if state.get(t) == "needs-adrian" and ev.get("status") != "needs-adrian" and by != "adrian":
+                errs.append(f"firul {t} așteaptă decizia lui Adrian; doar Adrian îl poate debloca")
+            state[t] = ev.get("status")
+    return errs
+
+
+def set_status(thread: str, status: str, by: str, reason: str = "") -> None:
+    if status not in CONFIG["statuses"]:
+        raise Refused(f"Stare necunoscută: {status}")
+    acting = os.environ.get("ACP_AGENT")
+    if acting and by != acting:
+        raise Refused("Identitate refuzată.")
+    if thread_status(thread) == "needs-adrian" and status != "needs-adrian" and by != "adrian":
+        raise Refused("Firul așteaptă decizia lui Adrian; doar Adrian îl poate debloca.")
+    append_event({"event": "status", "thread": thread, "status": status, "by": by, "reason": reason})
+
+
 def _show(sha: str, path: str) -> str:
     try:
         return git("show", f"{sha}:{path}")
@@ -461,8 +510,16 @@ def guard(base: str, head: str, *, attribution: dict | None = None, default: dic
         rules = principals[who]
         parents = git("rev-list", "--parents", "-n", "1", sha).split()[1:]
         if len(parents) > 1:
-            continue  # merge commits: their content is checked through the merged commits
-        for line in git("diff-tree", "--no-commit-id", "-r", "--name-status", "-M", sha).splitlines():
+            if who == "adrian" and kind == "pr_merge":
+                continue  # a PR merged by Adrian: its commits are checked one by one (all attributed pr_merge)
+            # any other merge is judged by everything it brings into the first parent
+            changes = git("diff-tree", "--no-commit-id", "-r", "--name-status", "-M", parents[0], sha)
+            added = git("diff", "--unified=0", parents[0], sha)
+        else:
+            changes = git("diff-tree", "--no-commit-id", "-r", "--name-status", "-M", sha)
+            added = git("show", "--format=", "--unified=0", sha)
+        prev = parents[0] if parents else None
+        for line in changes.splitlines():
             parts = line.split("\t")
             st, path = parts[0][0], parts[-1]
             old = parts[1] if len(parts) > 2 else path
@@ -472,8 +529,11 @@ def guard(base: str, head: str, *, attribution: dict | None = None, default: dic
             if path in CONFIG["append_only_files"]:
                 if st == "D":
                     errs.append(f"{tag}: jurnalul {path} a fost șters")
-                elif st == "M" and not _show(sha, path).startswith(_show(f"{sha}^", path)):
+                elif st == "M" and not _show(sha, path).startswith(_show(prev, path) if prev else ""):
                     errs.append(f"{tag}: jurnalul {path} a fost rescris, nu doar completat")
+                elif path == "logs/events.jsonl":
+                    errs += [f"{tag}: {e}" for e in check_new_events(_show(prev, path) if prev else "",
+                                                                       _show(sha, path), who)]
             if path == pause:
                 if st != "A" and who != "adrian":
                     errs.append(f"{tag}: doar Adrian scoate sau schimbă pauza")
@@ -503,8 +563,7 @@ def guard(base: str, head: str, *, attribution: dict | None = None, default: dic
                          for r in rules["may_write_as"])
                 if not ok:
                     errs.append(f"{tag}: {who} a scris un mesaj ca '{m.get('from')}' ({m.get('runtime')}) — uzurpare de identitate")
-        diff = git("show", "--format=", "--unified=0", sha)
-        for l in diff.splitlines():
+        for l in added.splitlines():
             if l.startswith("+") and not l.startswith("+++") and SECRET_RE.search(l):
                 errs.append(f"{tag}: linie adăugată care seamănă cu o cheie secretă")
                 break
@@ -547,6 +606,15 @@ def make_bundle() -> dict:
     return out
 
 
+def _safe_path(path: str) -> bool:
+    if not path or path.startswith("/") or "\\" in path or ".." in Path(path).parts or path.split("/")[0] == ".git":
+        return False
+    try:
+        return (ROOT / path).resolve().is_relative_to(ROOT.resolve())
+    except (OSError, ValueError):
+        return False
+
+
 def apply_bundle(bundle: dict, principal: str, only: tuple[str, ...] | None = None) -> list[str]:
     """Apply a bundle on the current tree. Only creates new files and appends lines, and only in paths
     the principal may write. Returns the reasons for anything refused (empty = all applied)."""
@@ -555,7 +623,7 @@ def apply_bundle(bundle: dict, principal: str, only: tuple[str, ...] | None = No
     for path, content in bundle.get("new", {}).items():
         if only and not path_matches(path, only):
             continue
-        if ".." in Path(path).parts or path.startswith("/"):
+        if not _safe_path(path):
             refused.append(f"{path}: cale invalidă")
             continue
         if path_matches(path, CONFIG["protected_paths"]) and path != CONFIG["pause_file"]:
@@ -577,6 +645,19 @@ def apply_bundle(bundle: dict, principal: str, only: tuple[str, ...] | None = No
     for path, extra in bundle.get("append", {}).items():
         if only and not path_matches(path, only):
             continue
+        if not _safe_path(path):
+            refused.append(f"{path}: cale invalidă")
+            continue
+        if path not in CONFIG["append_only_files"] and not path.startswith(("logs/", "memory/")):
+            refused.append(f"{path}: adăugarea e permisă doar la jurnale")
+            continue
+        if path == "logs/events.jsonl":
+            cur_ev = (ROOT / path).read_text(encoding="utf-8") if (ROOT / path).exists() else ""
+            bad = check_new_events(cur_ev, cur_ev + ("" if not cur_ev or cur_ev.endswith("\n") else "\n") + extra,
+                                   principal)
+            if bad:
+                refused += [f"{path}: {e}" for e in bad]
+                continue
         if path_matches(path, CONFIG["immutable_paths"]) or path_matches(path, CONFIG["protected_paths"]) \
                 or (path_matches(path, CONFIG["owner_only_paths"]) and principal != "adrian") \
                 or not path_matches(path, rules["write"]):
@@ -685,12 +766,7 @@ def main(argv=None) -> int:
         elif a.cmd == "thread":
             print(transcript(a.thread))
         elif a.cmd == "status":
-            if a.status not in CONFIG["statuses"]:
-                raise Refused(f"Stare necunoscută: {a.status}")
-            acting = os.environ.get("ACP_AGENT")
-            if acting and a.by != acting:
-                raise Refused("Identitate refuzată.")
-            append_event({"event": "status", "thread": a.thread, "status": a.status, "by": a.by, "reason": a.reason})
+            set_status(a.thread, a.status, a.by, a.reason)
             build_views()
         elif a.cmd == "build":
             build_views()
