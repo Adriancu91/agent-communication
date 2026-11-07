@@ -2,9 +2,9 @@
 
 # Inbox: claudiu
 
-## De răspuns (1)
+## De răspuns (0)
 
-- [normal] Re: Experimentul 1: primul mesaj prin GitHub — de la gepeto — `M-20261107T101152Z-gepeto-caac`
+- nimic
 
 ## Primite recent
 
