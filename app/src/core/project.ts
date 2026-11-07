@@ -23,7 +23,14 @@ export interface Project {
 
 export type FieldError = "empty" | "tooLong" | "invalidChars";
 
-const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F‪-‮⁦-⁩]/;
+/** Characters never stored: control characters (except tab / line break) and invisible text-direction overrides. */
+export const UNSAFE_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u202A-\u202E\u2066-\u2069]/;
+const UNSAFE_ALL = new RegExp(UNSAFE_CHARS.source, "g");
+/** Removes them (used for text pasted from elsewhere, such as an AI reply). */
+export function stripUnsafe(s: string): string {
+  return s.replace(UNSAFE_ALL, "");
+}
+const CONTROL = UNSAFE_CHARS;
 
 /** Length in characters as a person counts them (an emoji counts as one). */
 export function charCount(s: string): number {

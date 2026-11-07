@@ -71,6 +71,10 @@ test("launcher → package → session → AI reply → review: only accepted pr
   await expect(dlg.locator('[data-review="Trimite oferta"] [data-verdict="reject"]')).toHaveAttribute("aria-checked", "true");
   await expect(dlg.locator('[data-review="Preț 4,5 lei/kg"] [data-relation="replaces"]')).toContainText("Preț 4,2 lei/kg");
   await expect(dlg.locator('[data-review="Certificatul ANPM a fost cerut"] [data-relation="resolves"]')).toContainText("Lipsește certificatul ANPM");
+  // proposals with a relation have no default: they must be accepted or rejected now (no "later")
+  await expect(dlg.locator("[data-undecided]")).toHaveAttribute("data-undecided", "2");
+  await expect(dlg.locator('[data-action="save-review"]')).toBeDisabled();
+  await expect(dlg.locator('[data-review="Preț 4,5 lei/kg"] [data-verdict="later"]')).toHaveCount(0);
   // accept the price and the certificate, edit the call step, leave the transport problem undecided
   await dlg.locator('[data-review="Preț 4,5 lei/kg"] [data-verdict="accept"]').click();
   await dlg.locator('[data-review="Certificatul ANPM a fost cerut"] [data-verdict="accept"]').click();
@@ -119,13 +123,19 @@ test("moving the work from Claude to ChatGPT: the second package carries the acc
   await page.locator('[data-action="continue-elsewhere"]').first().click();
   await expect(page.locator("[data-continues]")).toContainText("Claude");
   await expect(page.locator('[data-provider="chatgpt"]')).toHaveAttribute("aria-checked", "true"); // another assistant suggested
-  await expect(page.locator('[data-history="1"]')).toHaveAttribute("aria-checked", "true");
+  // saved replies are included only on request, with a warning, and without their proposals block
+  await expect(page.locator('[data-history="0"]')).toHaveAttribute("aria-checked", "true");
+  await page.locator('[data-history="1"]').click();
+  await expect(page.locator("[data-history-warn]")).toBeVisible();
   await page.locator('[data-step="pack"] summary', { hasText: "Vezi pachetul" }).click();
   const pack = page.locator("[data-pack]");
   await expect(pack).toContainText("pentru ChatGPT");
   await expect(pack).toContainText("Preț 4,5 lei/kg");
   await expect(pack).not.toContainText("[D1] ★ Preț 4,2 lei/kg"); // replaced: no contradiction in the context
   await expect(pack).toContainText("### Răspuns de la Claude");
+  await expect(pack).toContainText("Am verificat oferta. Prețul cuprului a crescut.");
+  await expect(pack).toContainText("blocul de propuneri a fost scos");
+  await expect(pack).not.toContainText('"tip": "pas", "titlu": "Trimite oferta"');
   await page.locator('[data-action="copy-pack"]').click();
   await expect(page.locator('[data-action="open-ai"]')).toHaveAttribute("href", "https://chatgpt.com/");
   await page.locator('[data-action="open-session"]').click();

@@ -2,7 +2,7 @@
 // journal event(s) + new records in ONE transaction. Content versions live in the journal.
 import {
   checkEntry, checkLink, isOfficial, cleanBody, cleanTitle, isCategory, isEntryId, isLinkType, newEntryId, newLinkId, REASON_MAX,
-  statusFromLinks, charCount, currentEvents,
+  statusFromLinks, charCount, currentEvents, stripUnsafe,
   type Category, type EntryVersion, type JournalEvent, type LinkProblem, type LinkType, type MemoryEntry,
   type MemoryLink, type Project,
 } from "../core";
@@ -292,7 +292,7 @@ export class MemoryStore {
   /** Links two official entries of the same project (see core/memory.ts checkLink for the rules). */
   async link(fromId: string, toId: string, type: LinkType, reason = ""): Promise<MemoryLink> {
     if (!isLinkType(type)) throw new LinkError("invalidType");
-    const r = cleanBody(reason);
+    const r = stripUnsafe(cleanBody(reason));
     if (charCount(r) > REASON_MAX) throw new MemoryValidationError("reason", "tooLong");
     return this.base.write(STORES, async (tx, ts) => {
       const [from, to] = await Promise.all([isEntryId(fromId) ? getEntry(tx, fromId) : undefined, isEntryId(toId) ? getEntry(tx, toId) : undefined]);
@@ -362,7 +362,7 @@ export class MemoryStore {
     const title = cleanTitle(input.title);
     const body = cleanBody(input.body ?? "");
     validate({ title, body });
-    const r = cleanBody(reason);
+    const r = stripUnsafe(cleanBody(reason));
     if (!r) throw new MemoryValidationError("reason", "empty");
     if (charCount(r) > REASON_MAX) throw new MemoryValidationError("reason", "tooLong");
     return this.base.write(STORES, async (tx, ts) => {
@@ -395,7 +395,7 @@ export class MemoryStore {
     const body = cleanBody(by.body ?? "");
     validate({ title, body, category: by.category });
     if (!isCategory(by.category) || by.category === "issue") throw new LinkError("wrongCategory");
-    const r = cleanBody(reason);
+    const r = stripUnsafe(cleanBody(reason));
     return this.base.write(STORES, async (tx, ts) => {
       const issue = isEntryId(issueId) ? await getEntry(tx, issueId) : undefined;
       if (!issue) throw new LinkError("missing");

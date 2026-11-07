@@ -332,3 +332,4 @@ p:last-child { margin-bottom: 0; }
 .steps .card { margin: 0; }
 .steps p { margin: 0 0 6px; }
 .import-contents p strong { display: inline-block; margin-top: 8px; }
+.import-item.has-error { border-color: var(--danger); }

@@ -23,7 +23,9 @@ Nu am construit nimic care ocolește autentificarea, limitele sau condițiile fu
 4. **Pachetul:** vezi câte informații intră, ce rămâne deoparte și de ce, și textul complet. Apoi „Copiază pachetul și pornește sesiunea” sau „Descarcă pachetul (.md)”. Dacă browserul refuză copierea, textul apare gata selectat, pentru copiere manuală.
 5. **Lucrează:** „Deschide Claude într-o filă nouă” (doar adresa site-ului, fără nimic în ea), apoi lipești pachetul ca prim mesaj.
 6. **Adu rezultatul înapoi:** în pagina sesiunii apeși „Adaugă răspunsul AI”, lipești răspunsul, apoi „Analizează”.
-7. **Confirmi:** pentru fiecare propunere alegi **Acceptă** (devine oficială), **Respinge** (rămâne în arhivă) sau **De decis** (rămâne în Memorie → Propuneri). Poți modifica tipul, titlul și textul înainte.
+7. **Confirmi:** pentru fiecare propunere alegi **Acceptă** (devine oficială), **Respinge** (rămâne în arhivă) sau **De decis** (rămâne în Memorie → Propuneri). Poți modifica tipul, titlul, textul și semnul „Important” înainte.
+   - O propunere care **înlocuiește** sau **rezolvă** ceva nu are alegere implicită și nu poate fi amânată: o accepți sau o respingi acum (altfel relația s-ar pierde și ar rămâne două decizii oficiale contradictorii). Dacă vrei totuși să o amâni, debifezi relația. „Salvează” rămâne blocat până alegi.
+   - Dacă o propunere nu poate fi salvată (de exemplu, decizia pe care o înlocuia a fost arhivată între timp), nu se salvează nimic, iar propunerea respectivă e marcată cu motivul.
 8. **Continuă cu alt AI:** din sesiune, Lansatorul se deschide pentru același proiect, cu alt asistent sugerat și cu ultimul răspuns inclus. Noua sesiune păstrează legătura cu cea veche.
 
 **Memoria oficială nu e modificată niciodată automat de AI.**
@@ -35,7 +37,9 @@ Text Markdown, citibil de orice AI, în limba aplicației (română / engleză):
 - **formatul propunerilor:** un singur bloc ` ```aiw-propuneri ` cu JSON (tip, titlu, text, important, `inlocuieste` + `motiv`, `rezolva`);
 - descrierea proiectului; secțiunile **Obiective, Instrucțiuni și reguli, Context, Decizii confirmate, Informații importante, Probleme deschise, Pașii următori**;
 - fiecare informație are o **referință scurtă** (G1, I2, D1, F3, C1, P1, S2), plus legăturile dintre ele („decurge din F1”, „înlocuită de D2”);
-- sarcina sesiunii; opțional, ultimele răspunsuri salvate (marcate „doar pentru context”).
+- sarcina sesiunii; opțional (doar la cerere, cu avertisment), ultimele răspunsuri salvate, marcate „doar pentru context” și **fără blocul lor de propuneri**, ca să nu ajungă în pachet propuneri respinse sau amânate.
+
+**Protecție:** orice text liber (descriere, sarcină, texte, răspunsuri) care începe un bloc de cod (` ``` ` sau `~~~`) e neutralizat, așa că doar exemplul aplicației arată ca un bloc de propuneri. Sarcina și descrierea au fiecare cel mult un sfert din limită, deci limita e respectată întotdeauna.
 
 **Fără contradicții și fără propuneri:** se folosește aceeași regulă ca la previzualizarea contextului din AIW-03. Intră doar memoria oficială (confirmată, nearhivată). Deciziile înlocuite, problemele rezolvate și pașii făcuți intră doar la cerere. Propunerile neconfirmate și cele respinse nu intră niciodată.
 
@@ -44,7 +48,8 @@ Text Markdown, citibil de orice AI, în limba aplicației (română / engleză):
 **Fișiere și documente:** aplicația încă nu stochează fișiere, deci pachetul nu le poate include. Le atașezi direct în conversația cu AI-ul. E o limitare documentată.
 
 ## 4. Citirea răspunsului (`src/continuity/reply.ts`)
-1. **Blocul standard** (` ```aiw-propuneri ` sau ` ```aiw-proposals `): JSON citit tolerant (virgule finale, ghilimele tipografice); se acceptă chei în română și în engleză.
+0. Caracterele invizibile de control și de direcție a textului sunt eliminate din tot ce vine de la AI (altfel ar fi făcut exporturile ilizibile).
+1. **Blocul standard** (` ```aiw-propuneri ` sau ` ```aiw-proposals `, la început de rând; dacă sunt mai multe, contează **ultimul**): JSON citit tolerant (virgule finale, ghilimele tipografice); se acceptă chei în română și în engleză.
 2. **Fără bloc:** se citesc secțiunile scrise de AI („**Decizii:**”, „## Next steps”, „Probleme deschise:”) și punctele de sub ele. Interfața cere verificare atentă.
 3. **Comparația cu memoria:** fiecare propunere e marcată
    - „există deja” (același tip și același titlu), cu „Respinge” ales implicit;
@@ -103,9 +108,27 @@ Text Markdown, citibil de orice AI, în limba aplicației (română / engleză):
 
 **Capturi de ecran:** `docs/screenshots/AIW-05-*.png` (iPhone și PC).
 
-## 7. Limitări
+## 7. Verificarea independentă
+Un agent separat, care nu a scris codul, a verificat AIW-05 cu probe proprii. A găsit 12 probleme, dintre care 2 grave. Le-am reparat pe toate cele cu efect, fiecare cu test:
+
+| # | Problema | Reparația |
+| --- | --- | --- |
+| 1 | caractere invizibile de control sau de direcție venite de la AI făceau orice export ulterior imposibil de importat | aceeași regulă de caractere peste tot; eliminate din textul AI și din motivele legăturilor; numele „alt AI” cu astfel de caractere e refuzat clar; test export → import |
+| 2 | propunerile respinse sau amânate ajungeau în pachet prin răspunsurile salvate | blocul de propuneri e scos din răspunsurile incluse; răspunsurile se includ doar la cerere, cu avertisment |
+| 3 | „De decis” pierdea relația (înlocuiește / rezolvă), deci apăreau două decizii oficiale contradictorii | relația se decide acum: acceptă sau respinge (sau debifezi relația) |
+| 4 | textul unei propuneri AI șterse definitiv rămâne în răspunsul salvat | spus explicit în fereastra de ștergere; dispare complet odată cu proiectul |
+| 5 | se citea primul bloc, chiar și o copie citată | se citește ultimul bloc aflat la început de rând; exemplele „…” sunt ignorate |
+| 6 | descrierea sau sarcina puteau conține un bloc fals | toate textele libere sunt neutralizate |
+| 7 | limita de mărime putea fi depășită de o sarcină uriașă | sarcina și descrierea limitate |
+| 8 | „important” neverificat; nu se putea schimba la revizuire | verificat; bifă în revizuire |
+| 9 | arhivele acceptau sesiuni imposibile | refuzate: răspuns după închidere, sesiune care se continuă pe ea însăși, editare după respingere, „propunere” care e de fapt informația ta, referințe spre alt proiect |
+| 10 | nu se vedea care propunere bloca salvarea | propunerea e marcată cu motivul |
+| 11, 12 | (AIW-04) numele din previzualizare; lista importurilor anterioare | reparate în PR-ul AIW-04 |
+
+## 8. Limitări
 - **Copierea și lipirea sunt manuale.** E prețul lui „fără API, fără cost, fără cheie”.
 - **Analiza răspunsului e mecanică**, nu „inteligentă”: funcționează bine când AI-ul folosește blocul cerut, iar altfel citește secțiunile cu titluri obișnuite. Proza liberă fără liste nu produce propuneri: răspunsul se salvează, iar informațiile se adaugă manual.
 - **Fișierele nu intră în pachet** (aplicația nu stochează încă fișiere).
 - **AI-ul nu primește automat nimic nou** în timpul conversației. Dacă memoria se schimbă, pregătești un pachet nou.
+- **Ștergerea definitivă a unei propuneri AI** nu șterge textul răspunsului AI salvat în sesiune; acesta se șterge odată cu proiectul.
 - **Textul conversației rămâne pe dispozitiv.** Răspunsurile salvate pot conține informații sensibile: ele intră în export și în jurnal și se șterg odată cu proiectul.

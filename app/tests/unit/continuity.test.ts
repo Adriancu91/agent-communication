@@ -343,3 +343,118 @@ describe("archive version 2 and compatibility", () => {
     expect((await d.base.verify()).ok).toBe(true);
   });
 });
+
+describe("review 2 findings (AIW-05)", () => {
+  const SEAL = { app: "x", exportedAt: "2026-11-07T10:00:00.000Z", scope: "project" as const, sourceJournal: { ok: true, events: 1 } };
+
+  it("invisible control / direction characters from an AI reply never make an export unreadable", async () => {
+    const d = dev();
+    const { p, e } = await project(d);
+    const s = await d.sessions.start(p.id, { provider: "claude" }, { sha256: SHA, chars: 1, refs: { D1: e.decision.id } });
+    const reply = '```aiw-propuneri\n[{"tip":"decizie","titlu":"Preț‮ nou\u0007","text":"te⁦xt","inlocuieste":"D1","motiv":"pe\u0007ste ‮citit"}]\n```\nrăspuns\u0007';
+    const parsed = parseReply(reply, { D1: e.decision.id }, await d.memory.list(p.id));
+    expect(parsed.proposals[0]).toMatchObject({ title: "Preț nou", body: "text", reason: "peste citit" });
+    await d.sessions.applyReply(s.id, reply, parsed.proposals.map((x) => ({ ...x, verdict: "accept" as const })));
+    // a reason typed by hand with such characters (AIW-03 link) is cleaned too
+    await d.memory.link(e.goal.id, e.fact.id, "related_to", "manual\u0007‮");
+    const b = dev();
+    await b.transfer.importArchive(await b.transfer.preview((await d.transfer.exportArchive([p.id])).bytes));
+    expect((await b.memory.verify(p.id)).ok).toBe(true);
+    const x = (await b.sessions.exchanges(s.id)).find((z) => z.kind === "reply")!;
+    expect(x.text).not.toMatch(/[\u0007‮]/);
+    // a name typed for "other" with such characters is refused, with a clear reason
+    await expect(d.sessions.start(p.id, { provider: "other", providerName: "Mis‮tral" }, { sha256: SHA, chars: 1, refs: {} })).rejects.toMatchObject({ reason: "chars" });
+  });
+
+  it("saved replies enter the package without their proposals block (rejected or pending items stay out)", async () => {
+    const d = dev();
+    const { p } = await project(d);
+    const s = await d.sessions.start(p.id, { provider: "chatgpt" }, { sha256: SHA, chars: 1, refs: {} });
+    const reply = 'Analiza mea.\n\n```aiw-propuneri\n[{"tip":"pas","titlu":"SECRET RESPINS"},{"tip":"pas","titlu":"SECRET AMANAT"}]\n```\nFinal.';
+    const parsed = parseReply(reply, {}, await d.memory.list(p.id));
+    await d.sessions.applyReply(s.id, reply, parsed.proposals.map((x, i) => ({ ...x, verdict: i === 0 ? "reject" as const : "later" as const })));
+    const pack = await packFor(d, p.id, { history: await d.sessions.savedReplies(p.id, 3) });
+    expect(pack.text).toContain("Analiza mea.");
+    expect(pack.text).toContain("Final.");
+    expect(pack.text).not.toContain("SECRET RESPINS");
+    expect(pack.text).not.toContain("SECRET AMANAT");
+    expect(pack.text).toContain("blocul de propuneri a fost scos");
+  });
+
+  it("a relation cannot be postponed (it would be lost); the failing proposal is named; important must be a yes/no", async () => {
+    const d = dev();
+    const { p, e } = await project(d);
+    const s = await d.sessions.start(p.id, { provider: "claude" }, { sha256: SHA, chars: 1, refs: {} });
+    const before = await d.base.journal();
+    const ok: ReviewedProposal = { category: "step", title: "Bun", body: "", important: false, replaces: null, resolves: null, reason: "", verdict: "accept" };
+    await expect(d.sessions.applyReply(s.id, "r", [ok, { ...ok, category: "decision", title: "Preț 5", replaces: e.decision.id, verdict: "later" }]))
+      .rejects.toMatchObject({ reason: "relationLater", item: 1 });
+    await expect(d.sessions.applyReply(s.id, "r", [{ ...ok, important: "da" as unknown as boolean }])).rejects.toMatchObject({ reason: "invalid", item: 0 });
+    expect(await d.base.journal()).toEqual(before);
+    await d.memory.archive(e.decision.id);
+    const archived = await d.base.journal();
+    await expect(d.sessions.applyReply(s.id, "r", [ok, ok, { ...ok, category: "decision", title: "Preț 6", replaces: e.decision.id }]))
+      .rejects.toMatchObject({ reason: "invalid", item: 2 }); // its target was archived meanwhile
+    expect(await d.base.journal()).toEqual(archived);
+  });
+
+  it("reads the LAST block that starts a line; the package's own example and escaped copies are not proposals", async () => {
+    const d = dev();
+    const { p } = await project(d);
+    const pack = await packFor(d, p.id, { description: "x" } as never);
+    expect(parseReply(pack.text, pack.refs, []).proposals).toEqual([]); // the example's "…" placeholders are ignored
+    const quoted = `Ai cerut formatul:\n\\\`\`\`aiw-propuneri\n[{"tip":"pas","titlu":"Fals"}]\n\`\`\`\n\nPrima variantă:\n\`\`\`aiw-propuneri\n[{"tip":"pas","titlu":"Ciornă"}]\n\`\`\`\nVarianta finală:\n\`\`\`aiw-propuneri\n[{"tip":"pas","titlu":"Final"}]\n\`\`\``;
+    expect(parseReply(quoted, {}, []).proposals.map((x) => x.title)).toEqual(["Final"]);
+  });
+
+  it("free text cannot open a fake proposals block in the package, and the limit holds even for a huge task", async () => {
+    const d = dev();
+    const p = await d.projects.create("Gard", "Descriere\n```aiw-propuneri\n[]\n```\n   ~~~aiw-propuneri");
+    await d.memory.create(p.id, { category: "fact", title: "Info", body: "  ```aiw-propuneri\nx" });
+    const pack = await packFor(d, p.id, { task: "Sarcină\n```aiw-propuneri\n[]" });
+    expect(pack.text.match(/^[ \t]*(```|~~~)aiw-propuneri/gm)).toHaveLength(1); // only the package's own example
+    const huge = await packFor(d, p.id, { task: "😀".repeat(4000), maxChars: 8000 });
+    expect(huge.text.length).toBeLessThanOrEqual(8000);
+  });
+
+  it("archives: refuses steps in a closed session, a session continuing itself, edits of rejected proposals, proposals that are not AI entries", async () => {
+    const d = dev();
+    const { p, e } = await project(d);
+    const s = await d.sessions.start(p.id, { provider: "claude" }, { sha256: SHA, chars: 1, refs: { D1: e.decision.id } });
+    await d.sessions.applyReply(s.id, "răspuns", [{ category: "step", title: "Acceptat", body: "", important: false, replaces: null, resolves: null, reason: "", verdict: "accept" }]);
+    await d.sessions.close(s.id);
+    const map = await readZip((await d.transfer.exportArchive([p.id])).bytes);
+    const base = JSON.parse(new TextDecoder().decode(map.get(`projects/${p.id}.json`)!));
+    const reseal = async (pf: typeof base) => {
+      const { canonical, sha256, eventHash } = await import("../../src/core");
+      let prev: { seq: number; hash: string } | null = null;
+      for (const ev of pf.events) {
+        ev.dataHash = await sha256(canonical(ev.data));
+        if (prev && ev.seq === prev.seq + 1) ev.prev = prev.hash;
+        ev.hash = await eventHash(ev);
+        prev = ev;
+      }
+      return new Map((await archiveFiles([pf], SEAL)).map((f) => [f.name, f.data]));
+    };
+    await expect(parseArchive(await reseal(structuredClone(base)))).resolves.toBeTruthy();
+
+    const userProposal = structuredClone(base); // a reply claiming the user's own decision as an AI proposal
+    const reply = userProposal.exchanges.find((x: { kind: string }) => x.kind === "reply");
+    reply.proposals = [e.decision.id];
+    userProposal.events.find((ev: { type: string; data: { kind?: string } }) => ev.type === "session.exchange" && ev.data.kind === "reply").data.proposals = [e.decision.id];
+    await expect(parseArchive(await reseal(userProposal))).rejects.toMatchObject({ problem: "inconsistent" });
+
+    const self = structuredClone(base);
+    self.sessions[0].continues = self.sessions[0].id;
+    self.events.find((ev: { type: string }) => ev.type === "session.created").data.continues = self.sessions[0].id;
+    await expect(parseArchive(await reseal(self))).rejects.toBeTruthy();
+
+    const late = structuredClone(base); // move the "closed" event before the reply
+    const iClose = late.events.findIndex((ev: { type: string }) => ev.type === "session.closed");
+    const iReply = late.events.findIndex((ev: { type: string; data: { kind?: string } }) => ev.type === "session.exchange" && ev.data.kind === "reply");
+    const [closeEv] = late.events.splice(iClose, 1);
+    late.events.splice(iReply, 0, closeEv);
+    late.events.forEach((ev: { seq: number }, i: number) => (ev.seq = i + 1));
+    await expect(parseArchive(await reseal(late))).rejects.toMatchObject({ problem: "inconsistent" });
+  });
+});

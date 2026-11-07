@@ -5,7 +5,7 @@
 // A file that passes was produced by the app's own operations, or is indistinguishable from one.
 import {
   charCount, checkDescription, checkEntry, checkName, cleanBody, cleanDescription, cleanName, cleanTitle, isCategory, isEntryId,
-  isLinkType, isOfficial, REASON_MAX, SOURCE_MAX, isSessionId, isExchangeId, isProvider, cleanText, EXCHANGE_MAX, TASK_MAX, PROVIDER_NAME_MAX,
+  isLinkType, isOfficial, REASON_MAX, SOURCE_MAX, UNSAFE_CHARS, isSessionId, isExchangeId, isProvider, cleanText, EXCHANGE_MAX, TASK_MAX, PROVIDER_NAME_MAX,
   type EventType, type MemoryEntry, type MemoryLink, type Project,
 } from "../core";
 import { ArchiveError, type ArchivedEvent, type ProjectFile } from "./archive";
@@ -14,7 +14,7 @@ const LINK_ID = /^L-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 const PROJECT_ID = /^P-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
-const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F‪-‮⁦-⁩]/;
+const CONTROL = UNSAFE_CHARS;
 
 const bad = (e: ArchivedEvent, what: string): never => {
   throw new ArchiveError("history", `event ${e.seq} ${what}`);
@@ -186,7 +186,7 @@ export function replayProject(pf: ProjectFile): void {
         removedLinks.add(id);
         break;
       case "session.created":
-        if (sessions.has(id)) inconsistent(`session created twice ${id}`);
+        if (sessions.has(id) || d.continues === id) inconsistent(`session ${id}`);
         sessions.set(id, { provider: d.provider as string, providerName: d.providerName as string, task: d.task as string, continues: d.continues as string | null, status: "open" });
         break;
       case "session.closed": case "session.reopened": {
@@ -197,6 +197,7 @@ export function replayProject(pf: ProjectFile): void {
       }
       case "session.exchange":
         if (exchanges.has(id) || !sessions.has(d.session as string)) inconsistent(`exchange ${id}`);
+        if (sessions.get(d.session as string)!.status === "closed") inconsistent(`exchange in a closed session ${id}`);
         exchanges.set(id, d);
         break;
       default: {
@@ -204,7 +205,7 @@ export function replayProject(pf: ProjectFile): void {
         if (!cur) inconsistent(`event for an unknown entry ${id}`);
         const c = cur!;
         if (e.type === "memory.edited") {
-          if (d.version !== c.version + 1) inconsistent(`version order ${id}`);
+          if (d.version !== c.version + 1 || c.confirmation === "rejected") inconsistent(`version order ${id}`);
           Object.assign(c, { title: d.title, body: d.body, version: d.version });
         } else if (e.type === "memory.important") c.important = d.important as boolean;
         else if (e.type === "memory.archived") c.archived = true;

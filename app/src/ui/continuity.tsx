@@ -9,7 +9,7 @@ import {
   assistantName, CATEGORIES, PROVIDERS, providerUrl, sha256, TITLE_MAX, BODY_MAX, TASK_MAX,
   type Category, type Exchange, type MemoryEntry, type ProviderId, type Session,
 } from "../core";
-import { buildPack, DEFAULT_PACK_LIMIT, PACK_LIMITS, parseReply, type Pack, type ParsedReply, type ProposalDraft, type Verdict } from "../continuity";
+import { buildPack, DEFAULT_PACK_LIMIT, PACK_LIMITS, parseReply, SessionError, type Pack, type ParsedReply, type ProposalDraft, type Verdict } from "../continuity";
 import { errorKey, lastProject, rememberProject, sessionStore, useMemory, useProjects } from "./data";
 import { fill, useDate, useI18n, type Key } from "./i18n";
 import { Dialog, toast } from "./widgets";
@@ -88,7 +88,8 @@ function Segmented<T extends string>(props: { label: string; options: { value: T
   return (
     <div class="segmented choices" role="radiogroup" aria-label={props.label} onKeyDown={move}>
       {props.options.map((o) => (
-        <button key={o.value} type="button" role="radio" aria-checked={props.value === o.value} tabIndex={props.value === o.value ? 0 : -1}
+        <button key={o.value} type="button" role="radio" aria-checked={props.value === o.value}
+          tabIndex={props.value === o.value || (!props.options.some((x) => x.value === props.value) && o === props.options[0]) ? 0 : -1}
           class={props.value === o.value ? "on" : ""} {...{ [`data-${props.name}`]: o.value }} onClick={() => props.onChange(o.value)}>
           {o.label}
         </button>
@@ -111,7 +112,8 @@ export function Launcher(props: { projectId?: string; continues?: string }): JSX
   const [provider, setProvider] = useState<ProviderId>("claude");
   const [providerName, setProviderName] = useState("");
   const [task, setTask] = useState("");
-  const [historyN, setHistoryN] = useState<"0" | "1" | "3">(props.continues ? "1" : "0");
+  // saved replies are included only on request: they are raw AI text (some of their ideas may have been rejected)
+  const [historyN, setHistoryN] = useState<"0" | "1" | "3">("0");
   const [maxChars, setMaxChars] = useState<number>(DEFAULT_PACK_LIMIT);
   const [includeClosed, setIncludeClosed] = useState(false);
   const [history, setHistory] = useState<Awaited<ReturnType<typeof sessionStore.savedReplies>>>([]);
@@ -227,6 +229,7 @@ export function Launcher(props: { projectId?: string; continues?: string }): JSX
         <p class="small-left"><strong>{t("lnHistory")}</strong></p>
         <Segmented name="history" label={t("lnHistory")} value={historyN} onChange={setHistoryN}
           options={[{ value: "0", label: t("lnHistory0") }, { value: "1", label: t("lnHistory1") }, { value: "3", label: t("lnHistory3") }]} />
+        {historyN !== "0" && <p class="small-left warn" data-history-warn>{t("lnHistoryWarn")}</p>}
         <label class="check">
           <input type="checkbox" checked={includeClosed} onChange={(e) => setIncludeClosed((e.target as HTMLInputElement).checked)} />
           <span>{t("ctxIncludeClosed")}</span>
@@ -458,7 +461,7 @@ function NoteDialog(props: { sessionId: string; onClose: () => void }): JSX.Elem
 
 // ---------- Bringing the reply back: paste → analyse → review → save ----------
 
-interface Item extends ProposalDraft { verdict: Verdict; editedTitle: string; editedBody: string; editedCategory: Category; keepRelation: boolean }
+interface Item extends ProposalDraft { verdict: Verdict | null; editedTitle: string; editedBody: string; editedCategory: Category; keepRelation: boolean }
 
 function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: Exchange[]; onClose: () => void }): JSX.Element {
   const { t } = useI18n();
@@ -467,6 +470,7 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
   const [items, setItems] = useState<Item[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorItem, setErrorItem] = useState<string | null>(null);
   const top = useRef<HTMLParagraphElement>(null);
   const byId = new Map(props.entries.map((e) => [e.id, e]));
   // the references of the latest package sent in this session (D1 → the entry it meant)
@@ -476,18 +480,28 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
     const r = parseReply(text, refs, props.entries);
     setParsed(r);
     setItems(r.proposals.map((p) => ({
-      ...p, verdict: p.match === "duplicate" || p.notes.includes("duplicateInReply") ? "reject" : "later",
+      // a proposal that replaces / resolves something must be decided now (no default); duplicates: reject
+      ...p, verdict: p.replaces || p.resolves ? null : p.match === "duplicate" || p.notes.includes("duplicateInReply") ? "reject" : "later",
       editedTitle: p.title, editedBody: p.body, editedCategory: p.category, keepRelation: true,
     })));
     setError(null);
     setTimeout(() => top.current?.focus(), 0);
   };
-  const set = (key: string, change: Partial<Item>) => setItems((list) => list.map((x) => (x.key === key ? { ...x, ...change } : x)));
+  const set = (key: string, change: Partial<Item>) => setItems((list) => list.map((x) => {
+    if (x.key !== key) return x;
+    const next = { ...x, ...change };
+    // "later" is not possible while a relation is kept
+    if (next.verdict === "later" && next.keepRelation && hasRelation(next)) next.verdict = null;
+    return next;
+  }));
+  const hasRelation = (x: Item) => !!((x.editedCategory === "decision" && x.replaces) || (x.editedCategory !== "issue" && x.resolves));
+  const undecided = items.filter((x) => x.verdict === null).length;
   const counts = { accept: items.filter((x) => x.verdict === "accept").length, reject: items.filter((x) => x.verdict === "reject").length, later: items.filter((x) => x.verdict === "later").length };
 
   const save = async () => {
     setBusy(true);
     setError(null);
+    setErrorItem(null);
     try {
       await sessionStore.applyReply(props.session.id, text, items.map((x) => {
         const changed = x.editedTitle !== x.title || x.editedBody !== x.body;
@@ -496,13 +510,19 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
         return {
           category: x.editedCategory, title: x.editedTitle, body: x.editedBody, important: x.important,
           original: changed ? { title: x.title, body: x.body } : undefined,
-          replaces: decisionRel, resolves: resolveRel, reason: x.reason, verdict: x.verdict,
+          replaces: decisionRel, resolves: resolveRel, reason: x.reason, verdict: x.verdict!,
         };
       }));
       props.onClose();
       toast({ text: fill(t("rvSaved"), { a: String(counts.accept), r: String(counts.reject), l: String(counts.later) }) });
     } catch (e) {
       setError(t(errorKey(e)));
+      // point at the proposal that could not be saved
+      const i = e instanceof SessionError ? e.item : undefined;
+      if (i !== undefined && items[i]) {
+        setErrorItem(items[i].key);
+        setTimeout(() => document.querySelector(`[data-review-key="${items[i].key}"]`)?.scrollIntoView({ block: "center" }), 0);
+      }
       setBusy(false);
     }
   };
@@ -544,7 +564,8 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
               const rel = x.replaces ? byId.get(x.replaces) : x.resolves ? byId.get(x.resolves) : undefined;
               const m = matchText(x);
               return (
-                <li key={x.key} class="import-item" data-review={x.title} data-match={x.match}>
+                <li key={x.key} class={"import-item" + (errorItem === x.key ? " has-error" : "")} data-review={x.title} data-review-key={x.key} data-match={x.match}>
+                  {errorItem === x.key && error && <p class="form-error" role="alert" data-item-error>{error}</p>}
                   <label class="field"><span>{t("memCategory")}</span>
                     <select name="category" value={x.editedCategory} onChange={(e) => set(x.key, { editedCategory: (e.target as HTMLSelectElement).value as Category })}>
                       {CATEGORIES.map((c) => <option key={c} value={c}>{t(oneKey(c))}</option>)}
@@ -556,6 +577,10 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
                     <label class="field"><span class="sr-only">{t("memBody")}</span>
                       <textarea name="body" rows={3} maxLength={BODY_MAX} value={x.editedBody} onInput={(e) => set(x.key, { editedBody: (e.target as HTMLTextAreaElement).value })} /></label>
                   </details>
+                  <label class="check small-left">
+                    <input type="checkbox" name="important" checked={x.important} onChange={(e) => set(x.key, { important: (e.target as HTMLInputElement).checked })} />
+                    <span>{t("rvImportant")}</span>
+                  </label>
                   {m && <p class="small-left warn" data-similar>{m}</p>}
                   {rel && (
                     <label class="check small-left" data-relation={x.replaces ? "replaces" : "resolves"}>
@@ -565,16 +590,19 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
                   )}
                   {x.notes.includes("unknownRef") && <p class="muted small-left">{t("rvUnknownRef")}</p>}
                   {x.notes.includes("titleCut") && <p class="muted small-left">{t("rvTitleCut")}</p>}
-                  <Segmented name="verdict" label={`${t("rvVerdict")} ${x.title}`} value={x.verdict} onChange={(v) => set(x.key, { verdict: v })}
-                    options={[{ value: "accept", label: t("rvAccept") }, { value: "reject", label: t("rvReject") }, { value: "later", label: t("rvLater") }]} />
+                  {x.verdict === null && <p class="small-left warn" data-choose>{t("rvChooseNow")}</p>}
+                  <Segmented name="verdict" label={`${t("rvVerdict")} ${x.title}`} value={x.verdict ?? ("" as Verdict)} onChange={(v) => set(x.key, { verdict: v })}
+                    options={[{ value: "accept" as Verdict, label: t("rvAccept") }, { value: "reject" as Verdict, label: t("rvReject") },
+                      ...(x.keepRelation && hasRelation(x) ? [] : [{ value: "later" as Verdict, label: t("rvLater") }])]} />
                 </li>
               );
             })}
           </ul>
-          {error && <p class="form-error" role="alert">{error}</p>}
+          {error && !errorItem && <p class="form-error" role="alert">{error}</p>}
+          {undecided > 0 && <p class="muted small-left" data-undecided={undecided}>{fill(t("rvUndecided"), { n: String(undecided) })}</p>}
           <div class="sheet-actions">
             <button type="button" class="button secondary" onClick={() => setParsed(null)}>{t("rvBack")}</button>
-            <button type="button" class="button" data-action="save-review" disabled={busy} onClick={save}>
+            <button type="button" class="button" data-action="save-review" disabled={busy || undecided > 0} onClick={save}>
               {items.length ? fill(t("rvSave"), { a: String(counts.accept), r: String(counts.reject), l: String(counts.later) }) : t("rvSaveOnly")}
             </button>
           </div>

@@ -46,7 +46,8 @@ const T = {
     task: "Sarcina pentru această sesiune",
     noTask: "Utilizatorul îți va spune în conversație ce are de făcut.",
     history: "Răspunsuri salvate din sesiuni anterioare",
-    historyNote: "Doar pentru context: memoria oficială de mai sus are prioritate dacă ceva diferă.",
+    historyNote: "Doar pentru context: memoria oficială de mai sus are prioritate dacă ceva diferă. Unele idei din aceste răspunsuri au fost respinse de utilizator.",
+    blockRemoved: "[blocul de propuneri a fost scos: deciziile utilizatorului asupra lui sunt în memoria oficială de mai sus]",
     reply: "Răspuns de la {ai}, {date}",
     note: "Notă a utilizatorului, {date}",
     empty: "Memoria oficială a proiectului e încă goală.",
@@ -79,7 +80,8 @@ const T = {
     task: "Task for this session",
     noTask: "The user will tell you in the conversation what to do.",
     history: "Saved replies from earlier sessions",
-    historyNote: "For context only: the official memory above takes priority if anything differs.",
+    historyNote: "For context only: the official memory above takes priority if anything differs. Some ideas in these replies were rejected by the user.",
+    blockRemoved: "[the proposals block was removed: the user's decisions on it are in the official memory above]",
     reply: "Reply from {ai}, {date}",
     note: "User's note, {date}",
     empty: "The project's official memory is still empty.",
@@ -118,9 +120,24 @@ export interface Pack {
 export const PACK_LIMITS = [8000, 24000, 48000, 96000] as const;
 export const DEFAULT_PACK_LIMIT = 24000;
 
+/** A line that starts a code fence (``` or ~~~, even indented) could pass for the proposals block: it is escaped. */
+export function escapeFences(text: string): string {
+  return text.replace(/^([ \t]*)(```|~~~)/gm, "$1\\$2");
+}
+
+/** A saved reply without its proposals block (the decisions on them are in the official memory, not here). */
+export function withoutProposals(text: string, lang: PackLang): string {
+  const tags = [BLOCK_TAG.ro, BLOCK_TAG.en].join("|");
+  return text.replace(new RegExp("^[ \\t]*(```|~~~)[ \\t]*(" + tags + ")[ \\t]*\\n[\\s\\S]*?(^[ \\t]*\\1[ \\t]*$|(?![\\s\\S]))", "gim"), T[lang].blockRemoved);
+}
+
+function cap(text: string, max: number): string {
+  return text.length <= max ? text : text.slice(0, Math.max(0, max - 1)) + "…";
+}
+
 function quote(text: string): string {
-  // indent a body under its bullet; a line starting with "```" could end the code block the AI expects, so it is escaped
-  return text.split("\n").map((l) => "  " + (l.startsWith("```") ? "\\" + l : l)).join("\n");
+  // indent a body under its bullet
+  return escapeFences(text).split("\n").map((l) => "  " + l).join("\n");
 }
 
 function render(project: Project, payload: ContextPayload, refs: Record<string, string>, idToRef: Map<string, string>, o: PackOptions, history: PackOptions["history"], extraOmitted: number): string {
@@ -130,7 +147,7 @@ function render(project: Project, payload: ContextPayload, refs: Record<string, 
   lines.push(`## ${t.forAi}`, ...t.rules.map((r) => `- ${r}`), "");
   lines.push("```" + BLOCK_TAG[o.lang], "[", ...t.example.map((e, i) => "  " + e + (i < t.example.length - 1 ? "," : "")), "]", "```");
   lines.push(fill(t.typesLine, { types: CATEGORIES.map((c) => PROPOSAL_TYPES[o.lang][c]).join(", ") }), "");
-  if (project.description) lines.push(`## ${t.project}`, project.description, "");
+  if (project.description) lines.push(`## ${t.project}`, escapeFences(cap(project.description, Math.floor(o.maxChars / 4))), "");
   if (payload.sections.length === 0) lines.push(t.empty, "");
   for (const s of payload.sections) {
     lines.push(`## ${t.sections[s.category]}`);
@@ -151,12 +168,12 @@ function render(project: Project, payload: ContextPayload, refs: Record<string, 
     lines.push("");
   }
   if (extraOmitted > 0) lines.push(`_${fill(t.omitted, { n: String(extraOmitted) })}_`, "");
-  lines.push(`## ${t.task}`, o.task || t.noTask, "");
+  lines.push(`## ${t.task}`, o.task ? escapeFences(cap(o.task, Math.floor(o.maxChars / 4))) : t.noTask, "");
   if (history.length) {
     lines.push(`## ${t.history}`, `_${t.historyNote}_`, "");
     for (const h of history) {
       const head = h.exchange.kind === "note" ? fill(t.note, { date: o.formatDate(h.exchange.createdAt) }) : fill(t.reply, { ai: h.assistant, date: o.formatDate(h.exchange.createdAt) });
-      lines.push(`### ${head}`, h.exchange.text.split("\n").map((l) => (l.startsWith("```") ? "\\" + l : l)).join("\n"), "");
+      lines.push(`### ${head}`, escapeFences(withoutProposals(h.exchange.text, o.lang)), "");
     }
   }
   void refs;
@@ -183,6 +200,7 @@ export function buildPack(project: Project, entries: MemoryEntry[], links: Memor
     }
     const sizeOmitted = ctx.omitted.filter((x) => x.reason === "sizeLimit").length;
     const text = render(project, ctx.payload, refs, idToRef, o, history, sizeOmitted);
+    // task and description are capped at a quarter of the limit each, so an empty memory always fits
     if (text.length <= o.maxChars || (budget <= 0 && history.length === 0)) {
       return {
         text, refs, omitted: ctx.omitted,

@@ -6,7 +6,7 @@
 // 3. Every proposal is compared with the memory: already there (same category + same title), similar
 //    (most words of the title in common), or new; references (D1, P2) are resolved to the real entries.
 import {
-  CATEGORIES, charCount, cleanBody, cleanTitle, searchKey, TITLE_MAX, BODY_MAX, REASON_MAX,
+  CATEGORIES, charCount, cleanBody, cleanTitle, searchKey, stripUnsafe, TITLE_MAX, BODY_MAX, REASON_MAX,
   type Category, type MemoryEntry,
 } from "../core";
 import { BLOCK_TAG, PROPOSAL_TYPES } from "./pack";
@@ -93,12 +93,16 @@ const field = (o: Record<string, unknown>, ...names: string[]): unknown => {
   return undefined;
 };
 
-const BLOCK_RE = new RegExp("```\\s*(" + [BLOCK_TAG.ro, BLOCK_TAG.en].join("|") + ")\\s*\\n([\\s\\S]*?)```", "i");
+/** The block must start a line (an escaped or quoted copy of the format does not count). The LAST one is the answer. */
+const BLOCK_RE = new RegExp("^[ \\t]*```[ \\t]*(" + [BLOCK_TAG.ro, BLOCK_TAG.en].join("|") + ")[ \\t]*\\n([\\s\\S]*?)^[ \\t]*```", "gim");
+/** Placeholders copied from the example in the package ("…") are not proposals. */
+const PLACEHOLDER = /^[\s.…]*$/;
 
 interface Raw { category: Category; title: string; body: string; important: boolean; replacesRef: string | null; resolvesRef: string | null; reason: string; origin: "block" | "sections" }
 
 function fromBlock(text: string): { raws: Raw[] | null; invalid: boolean } {
-  const m = BLOCK_RE.exec(text);
+  const all = [...text.matchAll(BLOCK_RE)];
+  const m = all.at(-1);
   if (!m) return { raws: null, invalid: false };
   let data: unknown;
   try {
@@ -114,7 +118,7 @@ function fromBlock(text: string): { raws: Raw[] | null; invalid: boolean } {
     const o = item as Record<string, unknown>;
     const category = categoryOf(field(o, "tip", "type", "categorie", "category"));
     const title = field(o, "titlu", "title");
-    if (!category || typeof title !== "string" || !title.trim()) continue;
+    if (!category || typeof title !== "string" || PLACEHOLDER.test(title)) continue;
     const str = (v: unknown) => (typeof v === "string" ? v : "");
     raws.push({
       category, title, body: str(field(o, "text", "body", "detalii", "details")), important: field(o, "important") === true,
@@ -141,7 +145,7 @@ function fromSections(text: string): Raw[] {
     const bullet = /^(?:[-*•–]|\d{1,3}[.)])\s+(.+)$/.exec(trimmed);
     if (bullet && !/^\*\*.*\*\*:?$/.test(trimmed)) {
       const t = bullet[1].replace(/^\[[ xX]\]\s*/, "").replace(/\*\*|__/g, "").trim();
-      if (current && t) raws.push({ category: current, title: t, body: "", important: false, replacesRef: null, resolvesRef: null, reason: "", origin: "sections" });
+      if (current && t && !PLACEHOLDER.test(t)) raws.push({ category: current, title: t, body: "", important: false, replacesRef: null, resolvesRef: null, reason: "", origin: "sections" });
       if (raws.length >= MAX_PROPOSALS) break;
       continue;
     }
@@ -169,7 +173,8 @@ function similarity(a: string, b: string): number {
  * Reads the reply. `refs` maps the short references of the package that was sent (D1 → entry id);
  * `entries` is the project's memory now (to compare with).
  */
-export function parseReply(text: string, refs: Record<string, string>, entries: MemoryEntry[]): ParsedReply {
+export function parseReply(raw: string, refs: Record<string, string>, entries: MemoryEntry[]): ParsedReply {
+  const text = stripUnsafe(raw); // invisible control / direction characters never reach the memory
   const { raws: blockRaws, invalid } = fromBlock(text);
   const raws = blockRaws ?? fromSections(text);
   const found: ParsedReply["found"] = blockRaws ? "block" : raws.length ? "sections" : "none";

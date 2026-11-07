@@ -13,7 +13,7 @@
 import {
   canonical, charCount, checkDescription, checkEntry, checkName, cleanBody, cleanDescription, cleanName, cleanTitle,
   EVENT_TYPES, eventHash, isCategory, isEntryId, isLinkType, isOfficial, REASON_MAX, sha256, statusFromLinks, SOURCE_MAX,
-  isProvider, isSessionId, isExchangeId, EXCHANGE_MAX, TASK_MAX, PROVIDER_NAME_MAX,
+  UNSAFE_CHARS, isProvider, isSessionId, isExchangeId, EXCHANGE_MAX, TASK_MAX, PROVIDER_NAME_MAX,
   type JournalEvent, type MemoryEntry, type MemoryLink, type Project, type Session, type Exchange,
 } from "../core";
 import { checkEventData, checkProjectExtras, replayProject } from "./replay";
@@ -92,7 +92,7 @@ const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 const PROJECT_ID = /^P-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const LINK_ID = /^L-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
-const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
+const CONTROL = UNSAFE_CHARS; // the same characters the app never stores
 
 export const isProjectId = (s: unknown): s is string => typeof s === "string" && PROJECT_ID.test(s);
 const isIso = (s: unknown): s is string => typeof s === "string" && ISO.test(s) && !Number.isNaN(Date.parse(s));
@@ -389,6 +389,22 @@ export async function parseArchive(files: Map<string, Uint8Array>): Promise<Pars
     checkConsistency(pf);
     if (mp.entries !== memory.length || mp.links !== links.length || mp.events !== events.length) throw new ArchiveError("structure", "manifest counts");
     projects.push(pf);
+  }
+  // what a session says about memory must stay inside its own project: the proposals it created are AI
+  // entries of that project (or deleted since), and its package references point to that project only
+  const owner = new Map<string, { projectId: string; author: string }>();
+  for (const pf of projects) for (const e of pf.memory) owner.set(e.id, { projectId: pf.project.id, author: e.author });
+  for (const pf of projects) {
+    for (const x of pf.exchanges) {
+      for (const id of x.proposals) {
+        const o = owner.get(id);
+        if (o && (o.projectId !== pf.project.id || o.author !== "ai")) throw new ArchiveError("inconsistent", `proposal ${id}`);
+      }
+      for (const id of Object.values(x.pack?.refs ?? {})) {
+        const o = owner.get(id);
+        if (o && o.projectId !== pf.project.id) throw new ArchiveError("inconsistent", `reference ${id}`);
+      }
+    }
   }
   return { manifest, manifestSha256: await fingerprint(mbytes), projects };
 }

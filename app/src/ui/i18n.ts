@@ -373,7 +373,7 @@ const ro = {
   lnPackOmitted: "{n} lăsate deoparte (vezi de ce)",
   lnHistoryOmitted: "{n} răspunsuri salvate (spațiu)",
   lnShowPack: "Vezi pachetul",
-  lnNothingSent: "Nimic nu se trimite automat. Pachetul conține doar memoria oficială, fără propuneri neconfirmate. Îl lipești tu în conversația cu {ai}.",
+  lnNothingSent: "Nimic nu se trimite automat. Pachetul conține doar memoria oficială, fără propuneri neconfirmate sau respinse (iar răspunsurile salvate, dacă le incluzi, fără blocul lor de propuneri). Îl lipești tu în conversația cu {ai}.",
   lnCopyStart: "Copiază pachetul și pornește sesiunea",
   lnDownloadStart: "Descarcă pachetul (.md)",
   lnStepWork: "Lucrează cu {ai}",
@@ -438,6 +438,12 @@ const ro = {
   se_closed: "Sesiunea e închisă. Redeschide-o ca să adaugi ceva.",
   se_project: "Proiectul e în coș sau nu mai există.",
   se_invalid: "Propunerile nu pot fi salvate așa (de exemplu, două înlocuiesc aceeași decizie). Nimic nu s-a schimbat.",
+  lnHistoryWarn: "Răspunsurile salvate intră așa cum au fost primite (fără blocul de propuneri): pot conține idei pe care le-ai respins. Memoria oficială rămâne referința.",
+  rvImportant: "Important",
+  rvChooseNow: "Propune o relație: alege acum „Acceptă” sau „Respinge” (sau debifează relația ca să poți amâna).",
+  rvUndecided: "{n} propuneri așteaptă alegerea ta.",
+  se_relationLater: "O propunere care înlocuiește sau rezolvă ceva trebuie acceptată sau respinsă acum. Nimic nu s-a schimbat.",
+  memPurgeAiNote: "Textul ei poate rămâne în răspunsul AI salvat în sesiune; se șterge complet odată cu proiectul.",
 } as const;
 
 export type Key = keyof typeof ro;
@@ -814,7 +820,7 @@ const en: Record<Key, string> = {
   lnPackOmitted: "{n} left out (see why)",
   lnHistoryOmitted: "{n} saved replies (space)",
   lnShowPack: "Show the package",
-  lnNothingSent: "Nothing is sent automatically. The package holds only the official memory, no unconfirmed proposals. You paste it into the conversation with {ai}.",
+  lnNothingSent: "Nothing is sent automatically. The package holds only the official memory, no unconfirmed or rejected proposals (and saved replies, if you include them, without their proposals block). You paste it into the conversation with {ai}.",
   lnCopyStart: "Copy the package and start the session",
   lnDownloadStart: "Download the package (.md)",
   lnStepWork: "Work with {ai}",
@@ -879,6 +885,12 @@ const en: Record<Key, string> = {
   se_closed: "The session is closed. Reopen it to add something.",
   se_project: "The project is in the trash or no longer exists.",
   se_invalid: "The proposals cannot be saved like this (for example, two replace the same decision). Nothing changed.",
+  lnHistoryWarn: "Saved replies are included as they were received (without the proposals block): they may contain ideas you rejected. The official memory stays the reference.",
+  rvImportant: "Important",
+  rvChooseNow: "It proposes a relation: choose “Accept” or “Reject” now (or untick the relation to postpone it).",
+  rvUndecided: "{n} proposals are waiting for your choice.",
+  se_relationLater: "A proposal that replaces or resolves something must be accepted or rejected now. Nothing changed.",
+  memPurgeAiNote: "Its text may remain in the AI reply saved in the session; it is fully erased with the project.",
 };
 
 export const DICTS: Record<Lang, Record<Key, string>> = { ro, en };

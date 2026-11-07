@@ -1,7 +1,7 @@
 // AI work sessions (AIW-05): a session = one project worked on with one AI assistant, outside the app.
 // The app never talks to the AI: it prepares the context, the user carries it over, and brings the
 // reply back. Pure types and rules, no storage.
-import { charCount } from "./project";
+import { charCount, stripUnsafe, UNSAFE_CHARS } from "./project";
 
 /**
  * Assistants the user can choose. `url` only opens the provider's own site in a new tab, where the user
@@ -70,10 +70,11 @@ export const isExchangeId = (s: unknown): s is string => typeof s === "string" &
 export const newSessionId = () => "S-" + crypto.randomUUID();
 export const newExchangeId = () => "X-" + crypto.randomUUID();
 
-const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
+const CONTROL = UNSAFE_CHARS;
 
+/** Pasted text: invisible control / direction characters are removed (they would make an export unreadable). */
 export function cleanText(raw: string): string {
-  return String(raw ?? "").normalize("NFC").replace(/\r\n?/g, "\n").replace(/[ \t]+$/gm, "").trim();
+  return stripUnsafe(String(raw ?? "")).normalize("NFC").replace(/\r\n?/g, "\n").replace(/[ \t]+$/gm, "").trim();
 }
 
 export type SessionProblem = "providerName" | "taskLong" | "textEmpty" | "textLong" | "chars";

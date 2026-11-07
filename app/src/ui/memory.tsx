@@ -425,7 +425,7 @@ export function EntryPage(props: { projectId: string; entryId: string }): JSX.El
           onConfirm={async () => { if (await run(() => memoryStore.reject(e.id), "memRejectedToast")) close(); }} />
       )}
       {dlg === "purge" && (
-        <Confirm title={t("memPurgeTitle")} text={`„${e.title}”. ${t("memPurgeText")}`} check={t("confirmPurgeCheck")} confirm={t("deleteForever")}
+        <Confirm title={t("memPurgeTitle")} text={`„${e.title}”. ${t("memPurgeText")}${e.author === "ai" ? ` ${t("memPurgeAiNote")}` : ""}`} check={t("confirmPurgeCheck")} confirm={t("deleteForever")}
           cancel={t("cancel")} danger error={dlgError} onClose={close}
           onConfirm={async () => {
             try {

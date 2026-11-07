@@ -4,13 +4,14 @@
 // saved in ONE transaction. Official memory is never changed without the user's explicit acceptance.
 import {
   assistantName, checkEntry, checkExchangeText, checkLink, checkSessionInput, cleanBody, cleanText, cleanTitle, isOfficial,
-  isSessionId, newEntryId, newExchangeId, newLinkId, newSessionId, statusFromLinks, charCount, REASON_MAX, SOURCE_MAX,
+  isSessionId, newEntryId, newExchangeId, newLinkId, newSessionId, statusFromLinks, charCount, stripUnsafe, REASON_MAX, SOURCE_MAX,
   type Category, type Exchange, type MemoryEntry, type MemoryLink, type Project, type ProviderId, type Session,
 } from "../core";
 import { JournaledStore, req, StorageError, type PendingEvent } from "../storage";
 
 export class SessionError extends Error {
-  constructor(public reason: "providerName" | "taskLong" | "textEmpty" | "textLong" | "chars" | "missing" | "closed" | "project" | "invalid", detail = "") {
+  constructor(public reason: "providerName" | "taskLong" | "textEmpty" | "textLong" | "chars" | "missing" | "closed" | "project" | "invalid" | "relationLater",
+    detail = "", /** Which proposal (index in the list) could not be saved, when one is the cause. */ public item?: number) {
     super(`session:${reason}${detail ? ` (${detail})` : ""}`);
     this.name = "SessionError";
   }
@@ -194,15 +195,19 @@ export class SessionStore {
     const text = cleanText(replyText);
     const p = checkExchangeText(text);
     if (p) throw new SessionError(p);
-    const items = proposals.map((x) => {
+    const items = proposals.map((x, i) => {
       const title = cleanTitle(x.title);
       const body = cleanBody(x.body);
       const orig = x.original ? { title: cleanTitle(x.original.title), body: cleanBody(x.original.body) } : null;
       const err = checkEntry({ title, body, category: x.category }) ?? (orig ? checkEntry({ title: orig.title, body: orig.body }) : null);
-      if (err) throw new SessionError("invalid", `${err.field}:${err.problem}`);
-      const reason = cleanBody(x.reason);
-      if (charCount(reason) > REASON_MAX) throw new SessionError("invalid", "reason");
-      if (!["accept", "reject", "later"].includes(x.verdict)) throw new SessionError("invalid", "verdict");
+      if (err) throw new SessionError("invalid", `${err.field}:${err.problem}`, i);
+      const reason = stripUnsafe(cleanBody(x.reason));
+      if (charCount(reason) > REASON_MAX) throw new SessionError("invalid", "reason", i);
+      if (!["accept", "reject", "later"].includes(x.verdict)) throw new SessionError("invalid", "verdict", i);
+      if (typeof x.important !== "boolean") throw new SessionError("invalid", "important", i);
+      // a relation (replaces / resolves) is decided now: kept for later it would be lost, leaving two
+      // contradictory decisions official once the proposal is confirmed
+      if (x.verdict === "later" && (x.replaces || x.resolves)) throw new SessionError("relationLater", "", i);
       const edited = orig && (orig.title !== title || orig.body !== body) ? orig : null;
       return { ...x, title, body, reason, edited };
     });
@@ -221,7 +226,7 @@ export class SessionStore {
       const created: MemoryEntry[] = [];
       const touched = new Map<string, MemoryEntry>(); // existing entries whose status changes
 
-      for (const it of items) {
+      for (const [index, it] of items.entries()) {
         const first = it.edited ?? { title: it.title, body: it.body };
         const id = newEntryId();
         let entry: MemoryEntry = {
@@ -251,7 +256,7 @@ export class SessionStore {
         if (relation) {
           const target = touched.get(relation.to) ?? byId.get(relation.to);
           const problem = checkLink(entry, target, relation.type, allLinks);
-          if (problem) throw new SessionError("invalid", `link:${problem}`);
+          if (problem) throw new SessionError("invalid", `link:${problem}`, index);
           const link: MemoryLink = { id: newLinkId(), projectId: s.projectId, from: id, to: relation.to, type: relation.type,
             reason: it.reason || (relation.type === "replaces" ? source : ""), createdAt: ts, v: 1 };
           allLinks.push(link);
