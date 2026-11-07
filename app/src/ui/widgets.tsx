@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "preact/hooks";
 
 export function Dialog(props: { title: string; onClose: () => void; children: ComponentChildren; id?: string }): JSX.Element {
   const ref = useRef<HTMLDialogElement>(null);
+  // the control that opened the dialog, captured before any field inside takes the focus
+  const [opener] = useState(() => (typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null));
   useEffect(() => {
     const d = ref.current!;
     if (!d.open) d.showModal();
@@ -12,7 +14,12 @@ export function Dialog(props: { title: string; onClose: () => void; children: Co
       props.onClose();
     };
     d.addEventListener("cancel", cancel);
-    return () => d.removeEventListener("cancel", cancel);
+    return () => {
+      d.removeEventListener("cancel", cancel);
+      if (d.open) d.close();
+      // keyboard users continue where they were: focus goes back to the control that opened the dialog
+      if (opener && opener.isConnected && document.activeElement !== opener) opener.focus({ preventScroll: true });
+    };
   }, []);
   return (
     <dialog ref={ref} class="sheet" aria-labelledby={(props.id ?? "dlg") + "-t"} id={props.id}>

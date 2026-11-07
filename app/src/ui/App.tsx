@@ -6,6 +6,7 @@ import { useClosedByNewerVersion, useStorageInfo } from "./data";
 import { setLang, useI18n, type Key, type Lang } from "./i18n";
 import { IconContinuity, IconLauncher, IconMemory, IconProjects, IconSettings } from "./icons";
 import { isStandalone, useOfflineState } from "./offline";
+import { ContextPreview, EntryPage, MemoryHistory, MemoryTab, ProjectMemory } from "./memory";
 import { ProjectPage, ProjectsScreen, TrashScreen } from "./projects";
 import { ToastHost } from "./widgets";
 
@@ -20,11 +21,25 @@ const TABS: { route: Route; label: Key; Icon: () => JSX.Element }[] = [
 ];
 
 /** #/proiecte, #/proiect/<id>, #/cos and the other tabs. Unknown addresses open the project list. */
-interface Location { route: Route; view: "list" | "project" | "trash" | "tab"; id?: string }
+interface Location {
+  route: Route;
+  view: "list" | "project" | "trash" | "tab" | "memory" | "entry" | "history" | "context";
+  id?: string;
+  entry?: string;
+}
 
 function readRoute(): Location {
   const r = location.hash.replace(/^#\/?/, "");
-  const m = /^proiect\/(.+)$/.exec(r);
+  const mem = /^proiect\/([^/]+)\/memorie(?:\/(.+))?$/.exec(r);
+  if (mem) {
+    const id = decodeURIComponent(mem[1]);
+    const rest = mem[2] ? decodeURIComponent(mem[2]) : "";
+    if (!rest) return { route: "memorie", view: "memory", id };
+    if (rest === "istoric") return { route: "memorie", view: "history", id };
+    if (rest === "context") return { route: "memorie", view: "context", id };
+    return { route: "memorie", view: "entry", id, entry: rest };
+  }
+  const m = /^proiect\/([^/]+)$/.exec(r);
   if (m) return { route: "proiecte", view: "project", id: decodeURIComponent(m[1]) };
   if (r === "cos") return { route: "proiecte", view: "trash" };
   if (r === "proiecte" || !TABS.some((t) => t.route === r)) return { route: "proiecte", view: "list" };
@@ -76,7 +91,11 @@ export function App(): JSX.Element {
         {loc.view === "list" && <ProjectsScreen />}
         {loc.view === "project" && <ProjectPage id={loc.id!} key={loc.id} />}
         {loc.view === "trash" && <TrashScreen />}
-        {route === "memorie" && <Memory />}
+        {loc.view === "memory" && <ProjectMemory projectId={loc.id!} key={loc.id} />}
+        {loc.view === "entry" && <EntryPage projectId={loc.id!} entryId={loc.entry!} key={loc.entry} />}
+        {loc.view === "history" && <MemoryHistory projectId={loc.id!} key={loc.id} />}
+        {loc.view === "context" && <ContextPreview projectId={loc.id!} key={loc.id} />}
+        {loc.view === "tab" && route === "memorie" && <MemoryTab />}
         {route === "continuitate" && <Continuity />}
         {route === "lansator" && <Launcher />}
         {route === "setari" && <Settings />}
@@ -108,15 +127,6 @@ function Empty(props: { lead: string; hint: string; action?: string }): JSX.Elem
       )}
       <span class="badge" id="soon">{t("comingSoon")}</span>
     </div>
-  );
-}
-
-function Memory(): JSX.Element {
-  const { t } = useI18n();
-  return (
-    <Screen title={t("memoryTitle")}>
-      <Empty lead={t("memoryEmpty")} hint={t("memorySections")} />
-    </Screen>
   );
 }
 

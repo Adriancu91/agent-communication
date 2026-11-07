@@ -71,7 +71,10 @@ test.describe("AIW-01 verification", () => {
     const inv = await inventory(page);
     console.log("SALVAT PE DISPOZITIV:", JSON.stringify(inv));
     // preferences only (language, order, notices) in localStorage; the project itself is not there
-    for (const k of inv.localStorage) expect(["aiw.lang", "aiw.sort", "aiw.persistAsked", "aiw.iosNotice"]).toContain(k);
+    // AIW-03: the integrity checkpoint (only a sequence number and a fingerprint) and the last opened project id
+    for (const k of inv.localStorage) expect(["aiw.lang", "aiw.sort", "aiw.persistAsked", "aiw.iosNotice", "aiw.checkpoint:aiw", "aiw.lastProject"]).toContain(k);
+    const cp = await page.evaluate(() => localStorage.getItem("aiw.checkpoint:aiw"));
+    if (cp) expect(Object.keys(JSON.parse(cp)).sort()).toEqual(["hash", "seq"]);
     const ls = await page.evaluate(() => JSON.stringify({ ...localStorage }));
     expect(ls).not.toContain("verificat");
     expect(inv.sessionStorage).toEqual([]);
@@ -144,6 +147,17 @@ test.describe("AIW-01 verification", () => {
       await expect(p2.locator('[data-offline="ready"]')).toBeVisible();
       const styled = await p2.locator(".tabbar").evaluate((e) => getComputedStyle(e).position);
       expect(["fixed", "sticky"]).toContain(styled); // "static" would mean the styles did not load
+      // AIW-03: memory works offline too — a project and a memory entry created with the network cut
+      await p2.goto(url + "#/proiecte");
+      await p2.locator('[data-action="new-project"]').first().click();
+      await p2.locator("#project-form input").fill("Creat fără internet");
+      await p2.locator("#project-form button[type=submit]").click();
+      await p2.locator('.row[data-project="Creat fără internet"] .row-main').click();
+      await p2.locator('[data-action="open-memory"]').click();
+      await p2.locator('[data-action="add-memory"]').click();
+      await p2.locator('#entry-form input[name="title"]').fill("Notă fără internet");
+      await p2.locator('#entry-form button[type="submit"]').click();
+      await expect(p2.locator('.row[data-entry="Notă fără internet"]')).toBeVisible();
       console.log("OFFLINE — cereri:", offline.requests.length, "eșuate:", offline.failed.length, offline.failed.join(" | "));
       expect(offline.failed.filter((f) => !f.includes("/sw.js"))).toEqual([]);
     } finally {
