@@ -57,27 +57,39 @@ test.describe("AIW-01 verification", () => {
     test.skip(browserName !== "chromium" || info.project.name !== "pc", "runs once, in Chromium");
   });
 
-  test("1. data: only the language choice is saved, on this device; nothing is sent anywhere", async ({ page }) => {
+  test("1. data: projects only in the app's database on this device; nothing is sent anywhere", async ({ page }) => {
     const all: string[] = [];
     page.on("request", (r) => all.push(`${r.method()} ${r.url()}`));
-    await page.goto("./#/proiecte");
-    await expect(page.locator('[data-offline="ready"], h1').first()).toBeVisible();
     await page.goto("./#/setari");
     await expect(page.locator('[data-offline="ready"]')).toBeVisible({ timeout: 15_000 });
     await useEverything(page);
+    await page.goto("./#/proiecte");
+    await page.locator('[data-action="new-project"]').click();
+    await page.getByLabel(/^Nume|^Name/).fill("Proiect de verificat 🔒");
+    await page.locator("#project-form button[type=submit]").click();
+    await expect(page.locator('[data-project="Proiect de verificat 🔒"]')).toBeVisible();
     const inv = await inventory(page);
     console.log("SALVAT PE DISPOZITIV:", JSON.stringify(inv));
-    expect(inv.localStorage).toEqual(["aiw.lang"]);
+    // preferences only (language, order, notices) in localStorage; the project itself is not there
+    for (const k of inv.localStorage) expect(["aiw.lang", "aiw.sort", "aiw.persistAsked", "aiw.iosNotice"]).toContain(k);
+    const ls = await page.evaluate(() => JSON.stringify({ ...localStorage }));
+    expect(ls).not.toContain("verificat");
     expect(inv.sessionStorage).toEqual([]);
     expect(inv.cookies).toBe("");
-    expect(inv.indexedDB).toEqual([]);
+    expect(inv.indexedDB).toEqual(["aiw"]);
     expect(inv.caches.every((c) => c.startsWith("aiw-"))).toBe(true);
+    const stored = await page.evaluate(() => new Promise<string>((resolve) => {
+      const r = indexedDB.open("aiw");
+      r.onsuccess = () => {
+        const g = r.result.transaction("projects").objectStore("projects").getAll();
+        g.onsuccess = () => { resolve(JSON.stringify(g.result)); r.result.close(); };
+      };
+    }));
+    expect(stored).toContain("Proiect de verificat");
     // Every request goes to the app's own address and is a GET for an app file: nothing is uploaded.
     const own = new URL(page.url()).origin;
     console.log("CERERI:", all.length, [...new Set(all.map((r) => r.replace(own, "")))].join(" | "));
-    for (const r of all) {
-      expect(r.startsWith(`GET ${own}/`), r).toBe(true);
-    }
+    for (const r of all) expect(r.startsWith(`GET ${own}/`), r).toBe(true);
   });
 
   test("2-3. real offline: first load online, browser closed, network cut, app reopened", async () => {

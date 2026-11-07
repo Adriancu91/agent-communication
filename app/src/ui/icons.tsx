@@ -28,3 +28,9 @@ export const IconLauncher = (): JSX.Element => (
 export const IconSettings = (): JSX.Element => (
   <svg {...base}><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
 );
+export const IconMore = (): JSX.Element => (
+  <svg {...base}><circle cx="5" cy="12" r="1.3" /><circle cx="12" cy="12" r="1.3" /><circle cx="19" cy="12" r="1.3" /></svg>
+);
+export const IconPin = (): JSX.Element => (
+  <svg {...base} width={16} height={16}><path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7" /></svg>
+);
