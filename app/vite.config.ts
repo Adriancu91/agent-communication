@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { defineConfig, type Plugin } from "vite";
 
 /**
@@ -18,6 +18,29 @@ function serviceWorker(): Plugin {
       ).digest("hex").slice(0, 12);
       const source = SW_TEMPLATE.replace("__VERSION__", version).replace("__ASSETS__", JSON.stringify(assets));
       this.emitFile({ type: "asset", fileName: "sw.js", source });
+    },
+  };
+}
+
+/**
+ * Writes licenses.txt with the license text of every library shipped inside the app
+ * (MIT and similar licenses require their notice to travel with the code; minifying removes comments).
+ */
+function thirdPartyLicenses(): Plugin {
+  return {
+    name: "aiw-licenses",
+    apply: "build",
+    generateBundle() {
+      const deps = Object.keys((pkg as { dependencies?: Record<string, string> }).dependencies ?? {}).sort();
+      const parts = deps.map((name) => {
+        const dir = new URL(`./node_modules/${name}/`, import.meta.url);
+        const meta = JSON.parse(readFileSync(new URL("package.json", dir), "utf8")) as { version: string; license: string };
+        const file = ["LICENSE", "LICENSE.md", "LICENSE.txt", "license"].find((f) => existsSync(new URL(f, dir)));
+        if (!file) throw new Error(`No license file for ${name}`);
+        return `${name} ${meta.version} (${meta.license})\n\n${readFileSync(new URL(file, dir), "utf8").trim()}\n`;
+      });
+      const head = "AI Workspace — third-party software included in this app / programe terțe incluse în aplicație\n";
+      this.emitFile({ type: "asset", fileName: "licenses.txt", source: [head, ...parts].join("\n" + "-".repeat(60) + "\n") });
     },
   };
 }
@@ -62,8 +85,8 @@ const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), 
 export default defineConfig({
   base: "./",
   define: { __APP_VERSION__: JSON.stringify(pkg.version) },
-  plugins: [serviceWorker()],
+  plugins: [thirdPartyLicenses(), serviceWorker()],
   oxc: { jsx: { runtime: "automatic", importSource: "preact" } },
-  build: { target: "es2020", sourcemap: false, assetsInlineLimit: 0 },
+  build: { target: "es2020", sourcemap: false, assetsInlineLimit: 0, modulePreload: { polyfill: false } },
   test: { include: ["tests/unit/**/*.test.ts"], environment: "node" },
 } as never);

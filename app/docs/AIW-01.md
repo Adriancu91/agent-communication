@@ -53,3 +53,31 @@ Scheletul aplicației AI Workspace: construire, interfață pentru iPhone/Androi
 ## Surse
 - WebKit: limita de 7 zile pentru datele site-urilor nevizitate și scutirea aplicațiilor de pe ecranul principal (webkit.org/blog/10218).
 - MDN: Service Worker API, `Cache.match` (opțiunea `ignoreVary`), CSP.
+
+## Verificarea finală (cerută de Adrian și Gepeto, 7 noiembrie 2026)
+Testele noi sunt în `tests/e2e/verify.spec.ts` și `tests/unit/build.test.ts` și rulează la fiecare PR.
+
+1. **Unde stau datele.** După folosirea tuturor ecranelor și schimbarea limbii, pe dispozitiv există doar:
+   - `localStorage`: `aiw.lang` (limba aleasă);
+   - cache-ul aplicației `aiw-…`, care conține fișierele aplicației, nu date.
+
+   Nu există cookie-uri, `sessionStorage` sau baze de date (IndexedDB). Toate cererile din sesiune sunt `GET` spre adresa proprie a aplicației: 3 fișiere (pagina, codul, stilurile), nimic încărcat spre un server. Codul construit nu conține nicio funcție de rețea, iar CSP blochează orice alt site.
+2. **Fără internet, scenariu real**, testat automat în Chromium (Chrome / Edge / Android):
+   1. prima încărcare cu internet;
+   2. **închiderea completă a browserului**;
+   3. serverul oprit **și** rețeaua tăiată (toate conexiunile forțate printr-un proxy mort);
+   4. redeschiderea browserului cu același profil.
+
+   Aplicația se deschide, toate cele 5 ecrane merg, limba e păstrată: 3 cereri, 0 eșuate. **Proba inversă:** cu un profil gol și rețeaua tăiată, aplicația NU se deschide (`ERR_PROXY_CONNECTION_FAILED`), chiar cu serverul pornit. Deci tăierea rețelei e reală, iar aplicația vine de pe dispozitiv.
+3. **Toate resursele offline:** tot ce a cerut aplicația online se află în cache, iar cache-ul conține exact lista generată la construire (pagina, cod, stiluri, manifest, iconițe, licențe).
+4. **Riscuri de pierdere a datelor:** azi nu există date de pierdut (doar limba). Textele din Setări descriu corect comportamentul actual. Riscuri pentru etapele următoare: vezi planul AIW-02 (pe iPhone, datele din Safari și cele din aplicația de pe ecranul principal sunt **separate**).
+5. **Dependențe și Actions:**
+   - în aplicație intră doar `preact` (MIT); 86 de pachete servesc doar la construire și teste, toate cu licențe permisive;
+   - `npm audit`: 0 vulnerabilități; toate pachetele vin din registry.npmjs.org;
+   - `app.yml`: drepturi doar de citire, fără secrete, fără publicare, `npm ci --ignore-scripts`, acțiuni fixate pe SHA (reverificate).
+
+**Schimbări făcute la verificare** (fără schimbări de design):
+- s-a oprit un mic cod standard al Vite care putea face cereri (doar spre propriile fișiere), inutil aici;
+- s-a adăugat `licenses.txt` cu licența bibliotecilor incluse (licența MIT cere ca notificarea să însoțească codul, iar minificarea șterge comentariile).
+
+**Limită:** pe iPhone (Safari), funcționarea fără internet se verifică manual după prima publicare de test (AIW-07), deoarece motorul WebKit din testele automate nu rulează service workers.

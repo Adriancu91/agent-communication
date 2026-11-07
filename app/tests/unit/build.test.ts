@@ -44,6 +44,19 @@ describe.runIf(built)("built app (run `npm run build` first)", () => {
     for (const f of files) expect(list, f).toContain(f);
   });
 
+  it("ships the license notice of every bundled library (licenses.txt)", () => {
+    const pkg = JSON.parse(readFileSync(resolve(__dirname, "../../package.json"), "utf8")) as { dependencies: Record<string, string> };
+    const txt = readFileSync(join(DIST, "licenses.txt"), "utf8");
+    for (const name of Object.keys(pkg.dependencies)) expect(txt, name).toContain(name);
+    expect(txt).toContain("Permission is hereby granted");
+  });
+
+  it("the app code makes no network calls of its own (only the offline worker reads its own files)", () => {
+    for (const f of all(join(DIST, "assets")).filter((p) => p.endsWith(".js"))) {
+      expect(readFileSync(f, "utf8"), f).not.toMatch(/\bfetch\(|XMLHttpRequest|WebSocket|sendBeacon|EventSource|RTCPeerConnection|importScripts/);
+    }
+  });
+
   it("the offline worker ignores Vary (servers send Vary: Origin; without this, offline loads fail)", () => {
     const sw = readFileSync(join(DIST, "sw.js"), "utf8");
     expect(sw).toContain("ignoreVary: true");
