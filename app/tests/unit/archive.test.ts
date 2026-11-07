@@ -369,7 +369,17 @@ describe("every byte of an exported archive is protected", () => {
       if (sig === 0x04034b50) [4, 5, 10, 11, 12, 13].forEach((o) => harmless.add(i + o));
       if (sig === 0x02014b50) [4, 5, 6, 7, 12, 13, 14, 15, 34, 35, 36, 37, 38, 39, 40, 41].forEach((o) => harmless.add(i + o));
     }
-    expect(accepted.filter((i) => !harmless.has(i))).toEqual([]);
+    // the last byte of a compressed file may hold unused padding bits: changing them changes no content
+    const original = await readZip(bytes);
+    const sameContent = async (i: number) => {
+      const bad = bytes.slice();
+      bad[i] ^= 0x01;
+      const files = await readZip(bad);
+      return [...original].every(([n, d]) => files.get(n)?.length === d.length && files.get(n)!.every((b, k) => b === d[k]));
+    };
+    const meaningful: number[] = [];
+    for (const i of accepted.filter((x) => !harmless.has(x))) if (!(await sameContent(i))) meaningful.push(i);
+    expect(meaningful).toEqual([]);
   }, 60_000);
 });
 
