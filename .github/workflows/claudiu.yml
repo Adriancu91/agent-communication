@@ -1,0 +1,58 @@
+name: claudiu
+# Claudiu: answers conversations addressed to Claudiu with Claude Code, on Adrian's Claude subscription.
+# Needs the repository secret CLAUDE_CODE_OAUTH_TOKEN (made with `claude setup-token` on Adrian's computer).
+on:
+  push:
+    branches: [main]
+    paths: ["messages/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  id-token: write
+
+concurrency:
+  group: agents
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Work waiting?
+        id: chk
+        env:
+          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          n=$(python3 tools/acp.py pending --agent claudiu | python3 -c 'import json,sys;d=json.load(sys.stdin);print(0 if d["paused"] else len(d["items"]))')
+          echo "n=$n" >> "$GITHUB_OUTPUT"
+          echo "has_token=$HAS_TOKEN" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_TOKEN" != "true" ]; then echo "::notice::CLAUDE_CODE_OAUTH_TOKEN lipsește: Claudiu răspunde doar din sesiunile programate."; fi
+      - name: Claudiu (Claude Code)
+        if: steps.chk.outputs.n != '0' && steps.chk.outputs.has_token == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          prompt: |
+            Citește agents/claudiu/AUTOMATION.md și urmează-l exact.
+            Rulezi în GitHub Actions: NU faci commit și NU faci push; fluxul le face după tine.
+          claude_args: --max-turns 40
+      - name: Commit, guard, push
+        if: steps.chk.outputs.n != '0' && steps.chk.outputs.has_token == 'true'
+        run: |
+          git config user.name "Claudiu-agent"
+          git config user.email "claudiu-agent@users.noreply.github.com"
+          git add -A messages logs memory inbox outbox discussions decisions tasks research
+          if git diff --cached --quiet; then echo "Nimic nou."; exit 0; fi
+          git commit -q -m "claudiu: răspuns automat"
+          python3 tools/acp.py validate
+          python3 tools/acp.py guard --base origin/main --head HEAD --actor "github-actions[bot]"
+          for i in 1 2 3; do git push origin HEAD:main && break; git pull --rebase -q origin main; done
+          n=$(python3 tools/acp.py pending --agent gepeto | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["items"]))')
+          if [ "$n" != "0" ]; then GH_TOKEN="${{ github.token }}" gh workflow run gepeto.yml --ref main; fi

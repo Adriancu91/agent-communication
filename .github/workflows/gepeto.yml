@@ -1,0 +1,62 @@
+name: gepeto
+# Gepeto-API: answers conversations addressed to Gepeto through the OpenAI API.
+# Needs the repository secret OPENAI_API_KEY. Without it, it only runs when started by hand with mode=sim.
+on:
+  push:
+    branches: [main]
+    paths: ["messages/**"]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "api (real, needs OPENAI_API_KEY) or sim (test without a model)"
+        default: "api"
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: agents
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run Gepeto
+        id: g
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          MODE_IN: ${{ inputs.mode || 'api' }}
+        run: |
+          if [ -f protocol/PAUSE ]; then echo "Pauză activă."; exit 0; fi
+          MODE="$MODE_IN"
+          if [ "$MODE" = "api" ] && [ -z "$OPENAI_API_KEY" ]; then
+            echo "::notice::OPENAI_API_KEY lipsește: Gepeto-API nu răspunde. Pentru un test fără model porniți fluxul cu mode=sim."
+            exit 0
+          fi
+          python3 agents/gepeto/run_openai.py --mode "$MODE" > out.json
+          cat out.json
+          python3 -c 'import json;d=json.load(open("out.json"));print("to_claudiu="+str(d.get("to_claudiu",False)).lower())' >> "$GITHUB_OUTPUT"
+          rm out.json
+      - name: Commit, guard, push
+        run: |
+          git config user.name "Gepeto-agent"
+          git config user.email "gepeto-agent@users.noreply.github.com"
+          git add -A messages logs memory inbox outbox discussions
+          if git diff --cached --quiet; then echo "Nimic nou."; exit 0; fi
+          git commit -q -m "gepeto: răspuns automat"
+          python3 tools/acp.py validate
+          python3 tools/acp.py guard --base origin/main --head HEAD --actor "github-actions[bot]"
+          for i in 1 2 3; do git push origin HEAD:main && exit 0; git pull --rebase -q origin main; done
+          exit 1
+      - name: Hand over to Claudiu
+        if: steps.g.outputs.to_claudiu == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run claudiu.yml --ref main

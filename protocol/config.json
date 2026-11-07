@@ -1,0 +1,79 @@
+{
+  "protocol_version": "1.0",
+  "agents": {
+    "gepeto": {
+      "role": "Director strategic",
+      "runtimes": [
+        "chatgpt-ui",
+        "openai-api",
+        "codex",
+        "sim"
+      ],
+      "commit_author": "Gepeto-agent <gepeto-agent@users.noreply.github.com>"
+    },
+    "claudiu": {
+      "role": "Director tehnic",
+      "runtimes": [
+        "claude-code",
+        "sim"
+      ],
+      "commit_author": "Claudiu-agent <claudiu-agent@users.noreply.github.com>"
+    },
+    "adrian": {
+      "role": "Proprietar (om)",
+      "runtimes": [
+        "human"
+      ],
+      "commit_author": null
+    }
+  },
+  "limits": {
+    "max_auto_turns_per_thread": 8,
+    "max_messages_per_agent_per_day": 20,
+    "max_body_chars": 20000,
+    "history_messages_in_context": 12,
+    "openai_monthly_budget_usd": 5
+  },
+  "priorities": [
+    "low",
+    "normal",
+    "high",
+    "urgent"
+  ],
+  "types": [
+    "message",
+    "question",
+    "proposal",
+    "counterargument",
+    "evaluation",
+    "decision-request",
+    "decision",
+    "task",
+    "report",
+    "memory-proposal",
+    "ack",
+    "escalation",
+    "system"
+  ],
+  "statuses": [
+    "open",
+    "answered",
+    "accepted",
+    "rejected",
+    "blocked",
+    "closed",
+    "needs-adrian"
+  ],
+  "protected_paths": [
+    "protocol/",
+    ".github/",
+    "tools/",
+    "agents/",
+    "decisions/approvals/"
+  ],
+  "append_only_paths": [
+    "messages/",
+    "logs/"
+  ],
+  "pause_file": "protocol/PAUSE"
+}

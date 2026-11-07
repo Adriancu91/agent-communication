@@ -1,0 +1,32 @@
+name: guard
+# Checks every push and PR: messages are immutable, logs are append-only,
+# agents do not touch protected paths, no secrets. Also runs daily over the whole history,
+# because pushes made with GITHUB_TOKEN by the agent workflows do not trigger this workflow.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Protocol tests
+        run: python3 -m unittest discover -s tests
+      - name: Validate messages
+        run: python3 tools/acp.py validate
+      - name: Check history and protected paths
+        env:
+          BASE: ${{ github.event.before || github.event.pull_request.base.sha || '0000000000000000000000000000000000000000' }}
+          ACTOR: ${{ github.actor }}
+        run: python3 tools/acp.py guard --base "$BASE" --head HEAD --actor "$ACTOR"
