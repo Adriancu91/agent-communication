@@ -54,11 +54,15 @@ export async function makeEvent(prev: { seq: number; hash: string } | null, ts: 
   return { ...base, data, hash };
 }
 
+export type ChainProblem = "gap" | "brokenLink" | "eventModified" | "contentModified";
+
 export interface ChainReport {
   ok: boolean;
   events: number;
   erased: number;
-  problem?: string;
+  /** What is wrong, as a code the interface translates, and at which event. */
+  problem?: ChainProblem;
+  at?: number;
 }
 
 /** Checks the whole chain. Erased content is allowed; any other change is reported. */
@@ -66,13 +70,13 @@ export async function verifyChain(events: JournalEvent[]): Promise<ChainReport> 
   let prev = GENESIS;
   let erased = 0;
   for (const [i, e] of events.entries()) {
-    if (e.seq !== i + 1) return { ok: false, events: events.length, erased, problem: `lipsește evenimentul ${i + 1}` };
-    if (e.prev !== prev) return { ok: false, events: events.length, erased, problem: `legătura ruptă la ${e.seq}` };
+    if (e.seq !== i + 1) return { ok: false, events: events.length, erased, problem: "gap", at: i + 1 };
+    if (e.prev !== prev) return { ok: false, events: events.length, erased, problem: "brokenLink", at: e.seq };
     const h = await sha256(header(e));
-    if (h !== e.hash) return { ok: false, events: events.length, erased, problem: `evenimentul ${e.seq} a fost modificat` };
+    if (h !== e.hash) return { ok: false, events: events.length, erased, problem: "eventModified", at: e.seq };
     if (e.data === null) erased++;
     else if ((await sha256(canonical(e.data))) !== e.dataHash) {
-      return { ok: false, events: events.length, erased, problem: `conținutul evenimentului ${e.seq} a fost modificat` };
+      return { ok: false, events: events.length, erased, problem: "contentModified", at: e.seq };
     }
     prev = e.hash;
   }

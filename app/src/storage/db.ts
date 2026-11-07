@@ -63,7 +63,7 @@ export function done(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onabort = () => reject(toStorageError(tx.error ?? new DOMException("aborted", "AbortError")));
-    tx.onerror = (ev) => ev.preventDefault(); // the abort handler reports it
+    // A failed request aborts the whole transaction (the browser default); the abort handler reports it.
   });
 }
 

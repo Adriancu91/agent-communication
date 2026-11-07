@@ -429,3 +429,31 @@ test.describe("browser closed and reopened, offline", () => {
     });
   }
 });
+
+test("a project in the trash: its memory can be read, not changed", async ({ page }) => {
+  const pid = await newProject(page, "În coș");
+  await openMemory(page, pid);
+  await addEntry(page, "fact", "Se poate citi");
+  await page.goto(`./#/proiect/${encodeURIComponent(pid)}`);
+  await page.getByRole("button", { name: "Mută în coș" }).click();
+  await page.locator("#confirm").getByRole("button", { name: "Mută în coș" }).click();
+  await expect(page).toHaveURL(/#\/proiecte$/);
+  await page.goto(`./#/proiect/${encodeURIComponent(pid)}/memorie`);
+  await expect(page.locator('[data-notice="read-only"]')).toContainText("poate fi doar citită");
+  await expect(page.locator('[data-action="add-memory"]')).toHaveCount(0);
+  await openEntry(page, "Se poate citi");
+  await expect(page.locator('[data-notice="read-only"]')).toBeVisible();
+  await expect(page.getByRole("button", { name: "Editează" })).toHaveCount(0);
+  await expect(page.locator('[data-action="archive"]')).toHaveCount(0);
+});
+
+test("integrity without a checkpoint on this device is reported as a partial check, not as whole", async ({ page }) => {
+  const pid = await newProject(page, "Parțial");
+  await openMemory(page, pid);
+  await addEntry(page, "fact", "F");
+  await page.evaluate(() => localStorage.removeItem("aiw.checkpoint:aiw"));
+  await page.goto(`./#/proiect/${encodeURIComponent(pid)}/memorie/istoric`);
+  await page.locator('[data-action="verify"]').click();
+  await expect(page.locator('[data-integrity="partial"]')).toContainText("Verificare parțială");
+  await expect(page.locator('[data-integrity="ok"]')).toHaveCount(0);
+});

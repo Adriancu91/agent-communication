@@ -99,12 +99,12 @@ export function ProjectMemory(props: { projectId: string }): JSX.Element {
   const p = projects.find((x) => x.id === props.projectId);
   if (loading) return <p class="muted">{t("loading")}</p>;
   if (!p) return <div class="card empty"><p class="lead">{t("projectMissing")}</p></div>;
-  return <MemoryView project={p} back />;
+  return <MemoryView project={p} back readOnly={!!p.deletedAt} />;
 }
 
 // ---------- Memory view ----------
 
-function MemoryView(props: { project: Project; selector?: JSX.Element; notice?: string | null; back?: boolean }): JSX.Element {
+function MemoryView(props: { project: Project; selector?: JSX.Element; notice?: string | null; back?: boolean; readOnly?: boolean }): JSX.Element {
   const { t } = useI18n();
   const p = props.project;
   useLayoutEffect(() => rememberProject(p.id), [p.id]);
@@ -131,8 +131,11 @@ function MemoryView(props: { project: Project; selector?: JSX.Element; notice?: 
       {props.back && <a class="back" href={`#/proiect/${encodeURIComponent(p.id)}`}>‹ {p.name}</a>}
       <div class="title-row">
         <h1 class="large-title">{t("memoryTitle")}</h1>
-        <button type="button" class="button" data-action="add-memory" onClick={() => setAdding(true)} disabled={!!error}>{t("memAdd")}</button>
+        {!props.readOnly && (
+          <button type="button" class="button" data-action="add-memory" onClick={() => setAdding(true)} disabled={!!error}>{t("memAdd")}</button>
+        )}
       </div>
+      {props.readOnly && <div class="card notice" role="status" data-notice="read-only"><p>{t("memReadOnly")}</p></div>}
       {props.selector}
       {!props.selector && <p class="muted project-name">{p.name}</p>}
       {props.notice && <div class="card notice" role="status" data-notice="fallback"><p>{props.notice}</p></div>}
@@ -302,6 +305,8 @@ type Dlg = null | "edit" | "reject" | "purge" | "link" | "replace" | "resolve" |
 export function EntryPage(props: { projectId: string; entryId: string }): JSX.Element {
   const { t } = useI18n();
   const { entries, links, versions, loading } = useMemory(props.projectId);
+  const { projects } = useProjects();
+  const readOnly = !!projects.find((x) => x.id === props.projectId)?.deletedAt;
   const [dlg, setDlg] = useState<Dlg>(null);
   const [dlgError, setDlgError] = useState<string | null>(null);
   const run = useRun();
@@ -324,7 +329,8 @@ export function EntryPage(props: { projectId: string; entryId: string }): JSX.El
       <h1 class="large-title project-title">{e.title}</h1>
       <Badges e={e} />
 
-      {e.confirmation === "pending" && (
+      {readOnly && <div class="card notice" role="status" data-notice="read-only"><p>{t("memReadOnly")}</p></div>}
+      {!readOnly && e.confirmation === "pending" && (
         <div class="card notice" role="status">
           <p>{t("memPendingText")}</p>
           <div class="actions">
@@ -337,7 +343,7 @@ export function EntryPage(props: { projectId: string; entryId: string }): JSX.El
 
       {e.body && <p class="description entry-body">{e.body}</p>}
 
-      <div class="actions">
+      {!readOnly && <div class="actions">
         {e.confirmation !== "rejected" && !e.archived && <button type="button" class="button secondary" onClick={() => setDlg("edit")}>{t("edit")}</button>}
         {!e.archived && e.confirmation !== "rejected" && (
           <button type="button" class="button secondary" onClick={() => run(() => memoryStore.setImportant(e.id, !e.important))}>
@@ -361,7 +367,7 @@ export function EntryPage(props: { projectId: string; entryId: string }): JSX.El
             <button type="button" class="button secondary danger-text" data-action="purge" onClick={() => setDlg("purge")}>{t("deleteForever")}</button>
           </>
         )}
-      </div>
+      </div>}
 
       <div class="card" data-card="links">
         <h2>{t("memLinks")}</h2>
@@ -376,7 +382,7 @@ export function EntryPage(props: { projectId: string; entryId: string }): JSX.El
                   {other ? <a href={memUrl(props.projectId, `/${encodeURIComponent(other.id)}`)}>{other.title}</a> : <span class="muted">—</span>}
                   {other?.archived && <span class="muted"> ({t("memArchivedBadge")})</span>}
                   {l.reason && <span class="muted link-reason"> — {l.reason}</span>}
-                  <button type="button" class="icon-button small" aria-label={`${t("memRemoveLink")}: ${other?.title ?? ""}`} onClick={() => setDlg({ unlink: l })}>×</button>
+                  {!readOnly && <button type="button" class="icon-button small" aria-label={`${t("memRemoveLink")}: ${other?.title ?? ""}`} onClick={() => setDlg({ unlink: l })}>×</button>}
                 </li>
               );
             })}
@@ -594,6 +600,7 @@ export function MemoryHistory(props: { projectId: string }): JSX.Element {
   const [events, setEvents] = useState<JournalEvent[] | null>(null);
   const [report, setReport] = useState<(IntegrityReport & { inconsistencies: string[] }) | null>(null);
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     let alive = true;
     const load = () => memoryStore.timeline(props.projectId).then((e) => alive && setEvents(e.reverse()), () => alive && setEvents([]));
@@ -615,7 +622,7 @@ export function MemoryHistory(props: { projectId: string }): JSX.Element {
   };
   const detail = (r: IntegrityReport & { inconsistencies: string[] }) => {
     const parts: string[] = [];
-    if (r.problem) parts.push(r.problem);
+    if (r.problem) parts.push(fill(t(`prob_${r.problem}` as Key), { n: String(r.at ?? "?") }));
     if (r.checkpoint === "behind") parts.push(t("intCheckpointBehind"));
     if (r.checkpoint === "mismatch") parts.push(t("intCheckpointMismatch"));
     if (r.inconsistencies.length) parts.push(fill(t("intInconsistent"), { n: String(r.inconsistencies.length) }));
@@ -627,15 +634,31 @@ export function MemoryHistory(props: { projectId: string }): JSX.Element {
       <h1 class="large-title">{t("histTitle")}</h1>
       <div class="card" data-card="integrity">
         <h2>{t("intTitle")}</h2>
-        {report && (
-          <p class={report.ok ? "ok-text" : "form-error"} role="status" data-integrity={report.ok ? "ok" : "bad"}>
-            {report.ok ? fill(t("intOk"), { n: String(report.events) }) : fill(t("intBad"), { detail: detail(report) })}
-          </p>
+        {report && !report.ok && (
+          <p class="form-error" role="status" data-integrity="bad">{fill(t("intBad"), { detail: detail(report) })}</p>
         )}
-        {report?.checkpoint === "missing" && <p class="muted">{t("intCheckpointMissing")}</p>}
+        {report?.ok && report.checkpoint === "missing" && (
+          <p class="warn-text" role="status" data-integrity="partial">{fill(t("intPartial"), { n: String(report.events) })}</p>
+        )}
+        {report?.ok && report.checkpoint === "ok" && (
+          <p class="ok-text" role="status" data-integrity="ok">{fill(t("intOk"), { n: String(report.events) })}</p>
+        )}
+        {report && report.erased > 0 && <p class="muted">{fill(t("intErasedInfo"), { n: String(report.erased) })}</p>}
+        {failed && <p class="form-error" role="alert">{t("intError")}</p>}
         <p class="muted">{t("intLimits")}</p>
         <button type="button" class="button secondary small-button" disabled={busy} data-action="verify"
-          onClick={async () => { setBusy(true); try { setReport(await memoryStore.verify(props.projectId)); } finally { setBusy(false); } }}>
+          onClick={async () => {
+            setBusy(true);
+            setFailed(false);
+            try {
+              setReport(await memoryStore.verify(props.projectId));
+            } catch {
+              setReport(null);
+              setFailed(true);
+            } finally {
+              setBusy(false);
+            }
+          }}>
           {t("intRun")}
         </button>
       </div>
@@ -683,7 +706,7 @@ export function ContextPreview(props: { projectId: string }): JSX.Element {
       {ctx && (
         <>
           <h2 class="section-title">{fill(t("ctxIncluded"), { n: String(ctx.stats.included) })}</h2>
-          {ctx.sections.map((s) => (
+          {ctx.payload.sections.map((s) => (
             <div key={s.category} class="card" data-ctx-section={s.category}>
               <h2>{t(catKey(s.category))}</h2>
               <ul class="plain">{s.items.map((i) => <li key={i.id} data-ctx-item={i.title}>{i.important ? "★ " : ""}{i.title}</li>)}</ul>

@@ -1,12 +1,12 @@
 // Project memory operations. Every change goes through the shared journal (storage/journaled.ts):
 // journal event(s) + new records in ONE transaction. Content versions live in the journal.
 import {
-  checkEntry, checkLink, cleanBody, cleanTitle, isCategory, isEntryId, isLinkType, newEntryId, newLinkId, REASON_MAX,
+  checkEntry, checkLink, isOfficial, cleanBody, cleanTitle, isCategory, isEntryId, isLinkType, newEntryId, newLinkId, REASON_MAX,
   statusFromLinks, charCount,
   type Category, type EntryVersion, type JournalEvent, type LinkProblem, type LinkType, type MemoryEntry,
   type MemoryLink, type Project,
 } from "../core";
-import { eraseEventData, JournaledStore, req, StorageError, type IntegrityReport, type PendingEvent } from "../storage";
+import { checkJournal, eraseEventData, JournaledStore, req, StorageError, type Checkpoint, type IntegrityReport, type PendingEvent } from "../storage";
 
 export class MemoryValidationError extends Error {
   constructor(public field: string, public reason: string) {
@@ -34,6 +34,34 @@ const getEntry = (tx: IDBTransaction, id: string) => req(tx.objectStore("memory"
 const projectLinks = (tx: IDBTransaction, projectId: string) =>
   req(tx.objectStore("links").index("projectId").getAll(IDBKeyRange.only(projectId)) as IDBRequest<MemoryLink[]>);
 const getProject = (tx: IDBTransaction, id: string) => req(tx.objectStore("projects").get(id) as IDBRequest<Project | undefined>);
+
+const projectEntries = (tx: IDBTransaction, projectId: string) =>
+  req(tx.objectStore("memory").index("projectId").getAll(IDBKeyRange.only(projectId)) as IDBRequest<MemoryEntry[]>);
+
+/** Memory of a project in the trash (or deleted) can be read but not changed. */
+async function assertWritable(tx: IDBTransaction, projectId: string) {
+  const project = await getProject(tx, projectId);
+  if (!project || project.deletedAt) throw new StorageError("conflict", "project unavailable");
+}
+
+/**
+ * After `changed` entries change state (archived, confirmed…), the entries they replace or resolve may
+ * change status. Returns the entries whose status must be updated, with their new status.
+ */
+function statusUpdates(links: MemoryLink[], all: MemoryEntry[], changed: MemoryEntry[], ts: string): MemoryEntry[] {
+  const byId = new Map(all.map((e) => [e.id, e]));
+  for (const c of changed) byId.set(c.id, c);
+  const official = (id: string) => { const e = byId.get(id); return !!e && isOfficial(e); };
+  const targets = new Set(links.filter((l) => changed.some((c) => c.id === l.from) && (l.type === "replaces" || l.type === "resolves")).map((l) => l.to));
+  const out: MemoryEntry[] = [];
+  for (const id of targets) {
+    const t = byId.get(id);
+    if (!t) continue;
+    const status = statusFromLinks(id, links, official);
+    if (status !== t.status) out.push({ ...t, status, updatedAt: ts });
+  }
+  return out;
+}
 
 function validate(e: { title: string; body: string; category?: unknown; source?: string | null }) {
   const p = checkEntry(e);
@@ -178,13 +206,23 @@ export class MemoryStore {
     return this.base.write(STORES, async (tx, ts) => {
       const cur = await getEntry(tx, id);
       if (!cur) throw new StorageError("conflict", "missing entry");
+      await assertWritable(tx, cur.projectId);
       const c = change(cur, ts);
       if (!c) return { events: [], result: cur };
       const next = c.keepDate ? c.next : { ...c.next, updatedAt: ts };
+      // archiving / restoring / confirming an entry can change the status of what it replaces or resolves
+      const [links, all] = await Promise.all([projectLinks(tx, cur.projectId), projectEntries(tx, cur.projectId)]);
+      const cascade = statusUpdates(links, all, [next], ts);
       return {
         result: next,
-        events: [{ ...c.event, projectId: cur.projectId, entityId: id }],
-        apply: (w) => void w.objectStore("memory").put(next),
+        events: [
+          { ...c.event, projectId: cur.projectId, entityId: id },
+          ...cascade.map((t) => ({ type: "memory.status" as const, projectId: cur.projectId, entityId: t.id, data: { status: t.status } })),
+        ],
+        apply: (w) => {
+          w.objectStore("memory").put(next);
+          for (const t of cascade) w.objectStore("memory").put(t);
+        },
       };
     });
   }
@@ -201,13 +239,16 @@ export class MemoryStore {
       const cur = await getEntry(tx, id);
       if (!cur) throw new StorageError("conflict", "missing entry");
       if (!cur.archived) throw new StorageError("conflict", "not archived");
-      const links = await projectLinks(tx, cur.projectId);
+      await assertWritable(tx, cur.projectId);
+      const [links, all] = await Promise.all([projectLinks(tx, cur.projectId), projectEntries(tx, cur.projectId)]);
+      const allById = new Map(all.map((e) => [e.id, e]));
+      const officialSrc = (x: string) => x !== id && !!allById.get(x) && isOfficial(allById.get(x)!);
       const touching = links.filter((l) => l.from === id || l.to === id);
       const remaining = links.filter((l) => l.from !== id && l.to !== id);
       const others = [...new Set(touching.map((l) => (l.from === id ? l.to : l.from)))];
       const otherEntries = (await Promise.all(others.map((o) => getEntry(tx, o)))).filter(Boolean) as MemoryEntry[];
       const statusChanges = otherEntries
-        .map((o) => ({ o, status: statusFromLinks(o.id, remaining) }))
+        .map((o) => ({ o, status: statusFromLinks(o.id, remaining, officialSrc) }))
         .filter(({ o, status }) => o.status !== status);
       const events: PendingEvent[] = [
         ...touching.map((l) => ({ type: "link.removed" as const, projectId: cur.projectId, entityId: l.id, data: {} })),
@@ -242,6 +283,7 @@ export class MemoryStore {
       const links = from ? await projectLinks(tx, from.projectId) : [];
       const problem = checkLink(from, to, type, links);
       if (problem) throw new LinkError(problem);
+      await assertWritable(tx, from!.projectId);
       return this.planLink(from!, to!, type, r, ts, links);
     });
   }
@@ -270,9 +312,12 @@ export class MemoryStore {
     await this.base.write(STORES, async (tx, ts) => {
       const link = await req(tx.objectStore("links").get(linkId) as IDBRequest<MemoryLink | undefined>);
       if (!link) throw new LinkError("missing");
-      const links = (await projectLinks(tx, link.projectId)).filter((l) => l.id !== linkId);
-      const to = await getEntry(tx, link.to);
-      const status = to ? statusFromLinks(to.id, links) : null;
+      await assertWritable(tx, link.projectId);
+      const [allLinks, all] = await Promise.all([projectLinks(tx, link.projectId), projectEntries(tx, link.projectId)]);
+      const links = allLinks.filter((l) => l.id !== linkId);
+      const byId = new Map(all.map((e) => [e.id, e]));
+      const to = byId.get(link.to);
+      const status = to ? statusFromLinks(to.id, links, (x) => !!byId.get(x) && isOfficial(byId.get(x)!)) : null;
       const target = to && status !== to.status ? { ...to, status: status!, updatedAt: ts } : null;
       return {
         result: undefined,
@@ -303,6 +348,7 @@ export class MemoryStore {
     return this.base.write(STORES, async (tx, ts) => {
       const old = isEntryId(oldId) ? await getEntry(tx, oldId) : undefined;
       if (!old) throw new LinkError("missing");
+      await assertWritable(tx, old.projectId);
       const links = await projectLinks(tx, old.projectId);
       const entry: MemoryEntry = {
         id: newEntryId(), projectId: old.projectId, category: "decision", title, body, important: !!input.important,
@@ -333,6 +379,7 @@ export class MemoryStore {
     return this.base.write(STORES, async (tx, ts) => {
       const issue = isEntryId(issueId) ? await getEntry(tx, issueId) : undefined;
       if (!issue) throw new LinkError("missing");
+      await assertWritable(tx, issue.projectId);
       const links = await projectLinks(tx, issue.projectId);
       const entry: MemoryEntry = {
         id: newEntryId(), projectId: issue.projectId, category: by.category, title, body, important: false,
@@ -351,22 +398,38 @@ export class MemoryStore {
   // ---------- integrity ----------
 
   /**
-   * The journal check (chain + checkpoint) plus a consistency check of ONE project's memory:
-   * every entry's current text must equal its latest version in the journal, every link must have
-   * both ends, and every status must match the links.
+   * The journal check (chain + checkpoint) plus a consistency check of ONE project's memory, all on
+   * ONE snapshot (a single read transaction), with the checkpoint read before it:
+   * every entry's current text must equal its latest version in the journal and that version must not
+   * be erased; every link must have both ends; every status must match the links.
    */
   async verify(projectId: string): Promise<IntegrityReport & { inconsistencies: string[] }> {
-    const [report, entries, links, versions] = await Promise.all([this.base.verify(), this.list(projectId), this.links(projectId), this.versions(projectId)]);
-    const ids = new Set(entries.map((e) => e.id));
+    const cp: Checkpoint | null = this.base.checkpoint();
+    const { events, entries, links, project } = await this.base.read(["events", "memory", "links", "projects"], async (tx) => {
+      const [events, entries, links, project] = await Promise.all([
+        req(tx.objectStore("events").getAll() as IDBRequest<JournalEvent[]>),
+        projectEntries(tx, projectId), projectLinks(tx, projectId), getProject(tx, projectId),
+      ]);
+      return { events, entries, links, project };
+    });
+    const report = await checkJournal(events, cp);
+    const byId = new Map(entries.map((e) => [e.id, e]));
+    const official = (id: string) => !!byId.get(id) && isOfficial(byId.get(id)!);
     const problems: string[] = [];
-    for (const e of entries) {
-      const last = (versions.get(e.id) ?? []).at(-1);
-      if (!last || last.version !== e.version || last.title !== e.title || last.body !== e.body) problems.push(`content:${e.id}`);
-      if (e.status !== statusFromLinks(e.id, links)) problems.push(`status:${e.id}`);
+    const contentEvents = new Map<string, JournalEvent[]>();
+    for (const ev of events) {
+      if (ev.projectId !== projectId || !ev.entityId) continue;
+      if (ev.type === "memory.created" || ev.type === "memory.edited") contentEvents.set(ev.entityId, [...(contentEvents.get(ev.entityId) ?? []), ev]);
     }
-    for (const l of links) if (!ids.has(l.from) || !ids.has(l.to)) problems.push(`link:${l.id}`);
+    for (const e of entries) {
+      const evs = contentEvents.get(e.id) ?? [];
+      if (evs.some((ev) => ev.data === null)) { problems.push(`erased:${e.id}`); continue; } // content hidden while the entry still exists
+      const last = evs.at(-1)?.data as { title: string; body: string; version: number } | undefined;
+      if (!last || last.version !== e.version || last.title !== e.title || last.body !== e.body) problems.push(`content:${e.id}`);
+      if (e.status !== statusFromLinks(e.id, links, official)) problems.push(`status:${e.id}`);
+    }
+    if (project && events.some((ev) => ev.projectId === projectId && !ev.entityId && ev.data === null)) problems.push(`erased:${projectId}`);
+    for (const l of links) if (!byId.has(l.from) || !byId.has(l.to)) problems.push(`link:${l.id}`);
     return { ...report, ok: report.ok && problems.length === 0, inconsistencies: problems };
   }
 }
-
-

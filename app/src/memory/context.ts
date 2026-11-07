@@ -31,11 +31,20 @@ export interface Omission {
   reason: "sizeLimit" | "closed" | "archived" | "notConfirmed";
 }
 
-export interface PreparedContext {
+/** What may be handed to an AI (AIW-05): official memory only. Nothing else is ever sent. */
+export interface ContextPayload {
   format: "aiw-context";
   version: 1;
   project: { id: string; name: string; description: string };
   sections: { category: Category; items: ContextItem[] }[];
+}
+
+/**
+ * The payload plus a report for the USER (what was left out and why). The report may name pending
+ * or archived entries, so it must never be sent: serializeContext() serializes the payload only.
+ */
+export interface PreparedContext {
+  payload: ContextPayload;
   omitted: Omission[];
   stats: { included: number; omitted: number; chars: number; maxChars: number };
 }
@@ -56,7 +65,7 @@ function byPriority(a: MemoryEntry, b: MemoryEntry): number {
  * 4. Size limit (measured on the project + sections, see contextSize): entries are dropped one at a time, the least important first — non-important before
  *    important, sections from the end of CONTEXT_ORDER backwards, and inside a section from the
  *    bottom of its order — until the result fits. Every dropped entry is listed in `omitted`.
- *    Instructions are dropped last of all.
+ *    Importance comes first: a non-important instruction goes before an important step.
  * 5. Only entries of this project are read, whatever the input contains.
  */
 export function buildContext(project: Project, entries: MemoryEntry[], links: MemoryLink[], opts: ContextOptions = {}): PreparedContext {
@@ -97,14 +106,13 @@ export function buildContext(project: Project, entries: MemoryEntry[], links: Me
       .map((category) => ({ category, items: ordered.filter((e) => e.category === category && included.has(e.id)).map((e) => item(e, included)) }))
       .filter((s) => s.items.length > 0);
     const n = sections.reduce((s, x) => s + x.items.length, 0);
-    const result: PreparedContext = {
+    const payload: ContextPayload = {
       format: "aiw-context", version: 1,
       project: { id: project.id, name: project.name, description: project.description },
       sections,
-      omitted: [...omitted],
-      stats: { included: n, omitted: omitted.length, chars: 0, maxChars },
     };
-    result.stats.chars = contextSize(result);
+    const result: PreparedContext = { payload, omitted: [...omitted], stats: { included: n, omitted: omitted.length, chars: 0, maxChars } };
+    result.stats.chars = contextSize(payload);
     return result;
   };
 
@@ -118,15 +126,12 @@ export function buildContext(project: Project, entries: MemoryEntry[], links: Me
   return result;
 }
 
-/** Stable serialization of the whole result (sorted keys), used by the determinism tests. */
+/** Stable serialization (sorted keys) of the PAYLOAD only — the only part that may be sent. */
 export function serializeContext(c: PreparedContext): string {
-  return canonical(c);
+  return canonical(c.payload);
 }
 
-/**
- * The size that counts for the limit: what an AI would receive (the project and the sections).
- * The omission report is for the user and is not counted (it grows as entries are dropped).
- */
-export function contextSize(c: Pick<PreparedContext, "project" | "sections">): number {
-  return canonical({ project: c.project, sections: c.sections }).length;
+/** The size that counts for the limit: the serialized payload (the report for the user is not counted). */
+export function contextSize(payload: ContextPayload): number {
+  return canonical(payload).length;
 }

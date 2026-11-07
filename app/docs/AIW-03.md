@@ -1,168 +1,162 @@
-# AIW-03 — Memoria proiectelor (ARHITECTURĂ ȘI PLAN, neînceput)
+# AIW-03 — Memoria proiectelor
 
-Stare: **doar plan**. Implementarea începe după aprobarea lui Adrian și a lui Gepeto.
+**Stare:** implementat (misiune autonomă, 7–9 noiembrie 2026). PR #6, ciornă, **neîmbinat, nepublicat**.
+Jurnalul complet al execuției și deciziile sunt în `AIW-03_EXECUTION_LOG.md`.
 
-## 1. Scop
-Fiecare proiect primește o **memorie reală**, separată de a celorlalte. Memoria cuprinde:
-- informații importante, decizii, instrucțiuni, obiective și context;
-- un istoric organizat;
-- relații între informații.
+## 1. Ce face
+Fiecare proiect are o **memorie structurată**, separată de a celorlalte. Nu e un jurnal de conversații și nici o pagină de notițe libere.
+- **7 tipuri** de intrări: obiective, instrucțiuni și reguli, decizii, informații importante, context / starea actuală, probleme deschise, următorii pași.
+- **4 tipuri de legături:** decurge din (`derived_from`), înlocuiește (`replaces`), rezolvă (`resolves`), legată de (`related_to`).
+- Pentru fiecare intrare:
+  - versiuni (o editare nu șterge versiunea veche);
+  - semnul „important”;
+  - proveniența (tu / propunere AI, sursa, confirmarea);
+  - arhivă și restaurare; ștergere definitivă doar din arhivă, cu a doua confirmare.
+- **Fluxuri explicite:**
+  - înlocuirea unei decizii, cu motiv și cu confirmare (decizia veche rămâne);
+  - rezolvarea unei probleme, cu o intrare existentă sau nouă (problema rămâne).
+- **Căutare** în proiectul ales: titlu și text, fără diacritice. Versiunile anterioare doar la cerere; arhiva în vederea ei; propunerile, niciodată.
+- **Istoric și verificarea integrității.**
+- **Previzualizarea contextului pentru alt AI.** Doar previzualizare: nu există nicio integrare AI și nicio conexiune.
 
-Memoria e construită ca să poată fi folosită direct de modulul Continuitate (AIW-05) la transferul contextului spre alte platforme AI.
+## 2. Arhitectura
+```
+ui/memory.tsx ──► memory/service.ts (MemoryStore) ─┐
+ui/projects.tsx ─► projects/service.ts (ProjectStore) ─┤
+                                                      ▼
+                         storage/journaled.ts (JournaledStore) ← O SINGURĂ cale de scriere
+                                                      │
+                                   IndexedDB „aiw”, versiunea 2
+                    projects · events (jurnal) · meta · memory · links
+memory/context.ts (buildContext) ← funcție pură, citește doar memoria oficială
+core/ (project.ts, journal.ts, memory.ts) ← reguli și formate, fără stocare
+```
+- **Nicio stocare nouă.** Memoria folosește baza, jurnalul, tranzacțiile, erorile și coordonarea între file din AIW-02. Calea de scriere a fost **mutată** (nu copiată) din `projects/service.ts` în `storage/journaled.ts`.
+- **O schimbare = una sau mai multe intrări în jurnal + înregistrările noi, într-o singură tranzacție.**
+  - Un singur scriitor între file (Web Locks), plus verificarea „jurnalul nu s-a mișcat”.
+  - Orice eroare anulează tot.
+  - Celelalte file se actualizează singure.
+- Granițele dintre module (`src/modules.json`) sunt verificate de test: `memory → core, storage`; `projects → core, storage`.
 
-**Nu construim încă un mecanism de stocare.** Memoria folosește stocarea din AIW-02 (aceeași bază de date, același jurnal cu amprente, aceeași cale de scriere „totul sau nimic”).
+## 3. Migrarea
+- **Migrarea 2** (în `storage/db.ts`) adaugă depozitele `memory` (index `projectId`) și `links` (indexuri `projectId`, `from`, `to`), plus indexul `entityId` pe `events`. Nu modifică nicio înregistrare existentă.
+- **Siguranța:** actualizarea IndexedDB rulează într-o singură tranzacție. Dacă un pas eșuează, browserul păstrează versiunea 1 cu toate datele (testat). La următoarea deschidere, migrarea se reîncearcă.
+- **Evenimentele AIW-02 își păstrează amprenta:** câmpul nou `entityId` intră în amprentă doar când există.
+- **Testată** cu o bază creată de **codul AIW-02 real**:
+  - copia înghețată a fișierelor din `fe039c0`, în teste unitare;
+  - aplicația AIW-02 construită din `fe039c0`, într-un browser real, pe motorul Chrome și pe motorul iPhone (`tests/e2e/migration.spec.ts`).
+- **Revenirea:** nu există o migrare înapoi, intenționat. O versiune veche a aplicației care întâlnește baza la versiunea 2 primește o eroare clară („versiune mai veche în altă filă”) și nu atinge datele. Recuperarea sigură e exportul (AIW-04).
 
-## 2. Ce reutilizăm și ce schimbăm
-| Piesă din AIW-02 | În AIW-03 |
+## 4. Modelul de date
+**`MemoryEntry`** (depozitul `memory`):
+| Câmp | Rol |
 | --- | --- |
-| Baza `aiw` (IndexedDB) cu migrări numerotate | Adăugăm **migrarea 2**: depozitele `memory` și `links`. Proiectele existente rămân neatinse (test dedicat). |
-| Jurnalul cu amprente înlănțuite (`events`) | Același jurnal, cu tipuri noi de evenimente `memory.*` și `link.*`. Un singur istoric pentru tot proiectul. |
-| Calea unică de scriere din `projects/service.ts` (lacăt între file, tranzacție atomică, anulare la orice eroare, anunțarea celorlalte file) | **O mutăm într-o piesă comună** (`storage/journaled.ts`), folosită de `projects` și de `memory`. Nu o copiem: există o singură implementare, deci și reparațiile se fac într-un singur loc. |
-| Ștergerea definitivă a proiectului (șterge textele din jurnal după `projectId`) | Se extinde automat la memorie: toate evenimentele memoriei au `projectId`. În plus, ștergerea proiectului șterge și intrările de memorie și legăturile lui, în aceeași tranzacție. |
-| Validări, căutare fără diacritice (`core`) | Refolosite pentru titlurile și textele memoriei. |
-| Erorile de stocare, mesajele clare, fereastra care păstrează textul | Identice. |
-
-## 3. Modelul memoriei
-**Intrarea de memorie** (`MemoryItem`), separată pe proiect:
-
-| Câmp | Ce este |
-| --- | --- |
-| `id`, `projectId` | identitate; o intrare aparține unui singur proiect |
-| `kind` | unul din cele 7 tipuri de mai jos |
-| `title` | scurt, obligatoriu (cel mult 120 de caractere) |
-| `body` | textul (cel mult 20.000 de caractere), text simplu cu rânduri noi, fără HTML |
-| `status` | `active` · `done` (problemă rezolvată / pas făcut) · `superseded` (decizie înlocuită) · `archived` · `proposed` (propunere care așteaptă confirmarea) |
-| `important` | da/nu: intrările importante intră primele în pachetul de context |
-| `source` | `user` acum; mai târziu `chatgpt` / `claude` / `gemini` pentru propunerile importate (AIW-05) |
-| `revisions` | versiunile anterioare ale titlului și textului (ca istoricul numelor de proiect) |
+| `id` | `M-<uuid>`, stabil |
+| `projectId` | obligatoriu; o intrare aparține unui singur proiect |
+| `category` | unul din cele 7 tipuri |
+| `title` (≤ 120) | titlul intrării |
+| `body` (≤ 20.000) | text simplu, cu rânduri noi |
+| `important` | da / nu |
+| `status` | `active` · `replaced` · `resolved`; se **calculează din legături** (nu poate contrazice legăturile) |
+| `archived` | arhivată / nu (separat de stare: restaurarea readuce exact starea) |
+| `author` | `user` / `ai` (proveniența) |
+| `source` | text, doar dacă a fost dat (niciodată inventat) |
+| `confirmation` | `confirmed` / `pending` / `rejected` |
+| `confirmedAt` | data confirmării |
 | `createdAt`, `updatedAt` | datele |
-| doar la decizii: `rationale` (de ce), `alternatives` (ce s-a respins) | |
+| `version` | numărul versiunii curente |
+| `v` | versiunea formatului (1) |
 
-**Cele 7 tipuri:**
-1. **Obiective** (`goal`): ce vrea proiectul să obțină.
-2. **Instrucțiuni și reguli** (`instruction`): cum trebuie lucrat; ce trebuie să respecte orice AI.
-3. **Decizii** (`decision`): ce s-a hotărât, de ce, ce alternative s-au respins.
-4. **Informații importante** (`fact`): fapte, cifre, nume, date de reținut.
-5. **Context / starea actuală** (`context`): unde e proiectul acum.
-6. **Probleme deschise** (`issue`): ce nu e rezolvat.
-7. **Următorii pași** (`step`): ce urmează.
+**Versiunile** nu sunt dublate: evenimentele `memory.created` și `memory.edited` din jurnal poartă titlul, textul și numărul versiunii. Ele sunt deja legate de lanțul de amprente.
 
-**Relațiile** (`Link`) leagă două intrări **din același proiect**:
-| Relație | Exemplu |
-| --- | --- |
-| **decurge din** (`because`) | decizia „Folosim ZIP” decurge din obiectivul „Proiecte mutabile între dispozitive” |
-| **înlocuiește** (`supersedes`) | decizia nouă înlocuiește decizia veche, care devine automat `superseded` |
-| **rezolvă** (`resolves`) | pasul „Adaug export” rezolvă problema „Datele se pot pierde” |
-| **legat de** (`relates`) | orice altă legătură |
-
-Reguli:
-- fără legături cu sine însăși;
-- fără legături între proiecte;
-- fără legături duplicate;
-- când o intrare e ștearsă definitiv, legăturile ei dispar odată cu ea.
-
-**Istoricul organizat:**
-- o cronologie pe proiect, construită din jurnal (cine/ce/când: „Decizie adăugată”, „Problemă rezolvată”, „Instrucțiune modificată”…);
-- filtre după tip;
-- versiunile anterioare ale fiecărei intrări, păstrate în `revisions`.
-
-**Propunerile** (`status: proposed`): modelul și filtrul „De confirmat” există de acum, dar în AIW-03 doar utilizatorul scrie în memorie. Importul din răspunsurile AI (AIW-05) va crea doar propuneri; niciuna nu intră în memorie fără confirmarea utilizatorului.
-
-## 4. Pregătirea pentru Continuitate (AIW-05)
-Funcția pură `memory/context.ts → buildContext(project, items, links, opțiuni)` produce o **vedere structurată** a memoriei. Formatarea pentru fiecare AI vine în AIW-05.
-- **Ordinea:**
-  1. instrucțiuni;
-  2. obiective;
-  3. context;
-  4. decizii active (cu „de ce”);
-  5. informații importante;
-  6. probleme deschise;
-  7. următorii pași.
-
-  În fiecare grupă, intrările importante vin primele.
-- **Se exclud** intrările arhivate și deciziile înlocuite, iar propunerile apar marcate separat. Problemele rezolvate și pașii făcuți sunt excluși implicit.
-- Relațiile apar ca trimiteri scurte („decurge din: …”).
-- **O limită de mărime** (implicit ~24.000 de caractere): taie mai întâi intrările neimportante, iar ce s-a omis e raportat.
-- Rezultatul e date simple (JSON), testat unitar. În AIW-03 nu are interfață; o previzualizare simplă apare în AIW-05.
-
-## 5. Interfața (în stilul aprobat, întâi pentru iPhone)
-- **Pagina proiectului:** cardul „Conținutul proiectului” devine **„Memoria proiectului”**, cu numărul de intrări pe tipuri și butonul „Deschide memoria”.
-- **Ecranul memoriei** (`#/proiect/<id>/memorie`):
-  - titlul proiectului; căutare; filtre pe tipuri (rând de butoane derulabil pe telefon);
-  - lista grupată pe tipuri, cu steluță pentru important și starea (rezolvată, făcut, înlocuită, propunere);
-  - butonul „Adaugă” deschide o foaie de jos: tip, titlu, text, important; la decizii și „De ce” / „Alternative respinse”.
-- **Pagina unei intrări:**
-  - textul complet;
-  - schimbarea stării („Marchează rezolvată”, „Marchează făcut”, „Înlocuită de…”);
-  - **Legături** („Leagă de…”: alegi relația și intrarea, cu căutare);
-  - **Versiuni anterioare**;
-  - Arhivează / Restaurează; ștergerea definitivă doar din arhivă, cu a doua confirmare (ca la Coș).
-- **Istoricul proiectului** (`#/proiect/<id>/istoric`): cronologia, cu filtre.
-- **Tabul „Memorie”** deschide memoria ultimului proiect folosit, cu un selector de proiect sus. Fără proiecte: mesaj și butonul „Proiect nou”.
-- **Texte:** română și engleză; fără HTML în textele utilizatorului.
-
-## 6. Module și fișiere
-| Director | Ce conține | Depinde de |
+**`MemoryLink`** (depozitul `links`): `id` (`L-<uuid>`), `projectId`, `from`, `to`, `type`, `reason`, `createdAt`, `v`.
+| Relație | Sens | Reguli |
 | --- | --- | --- |
-| `core/memory.ts` | tipurile, validarea, regulile relațiilor, căutarea | — |
-| `storage/journaled.ts` | **calea comună de scriere** (mutată din `projects`) | `core` |
-| `storage/db.ts` | migrarea 2 (`memory`, `links` și indexurile lor) | — |
-| `projects/` | folosește calea comună; ștergerea definitivă include memoria | `core`, `storage` |
-| `memory/` (modul nou) | operațiile cu memoria, istoricul, `buildContext` | `core`, `storage` |
-| `ui/memory*.tsx` | ecranele | toate de mai sus |
+| `derived_from` | A decurge din B | fără cicluri |
+| `replaces` | decizia nouă → decizia veche | doar decizii; ținta devine `replaced`; fără cicluri; o decizie se înlocuiește o singură dată |
+| `resolves` | X → problema | ținta e o problemă, sursa nu; ținta devine `resolved` |
+| `related_to` | A ↔ B | duplicatul e verificat în ambele sensuri |
 
-Granițele sunt deja declarate în `src/modules.json` (`memory → core, storage`) și verificate de test. Fiecare modul nou are README.
+Reguli comune:
+- același proiect; fără legături cu sine; fără duplicate;
+- legăturile noi sunt permise doar între intrări confirmate și nearhivate;
+- la ștergerea definitivă a unei intrări, legăturile ei dispar, iar starea capătului celălalt se recalculează (o decizie al cărei înlocuitor e șters redevine activă).
 
-## 7. Pași (un singur PR, commit-uri mici, fiecare cu testele trecute)
-1. **Refactorizare fără schimbări vizibile:** calea de scriere mutată în `storage/journaled.ts`. Toate cele 98 de teste existente trebuie să treacă neschimbate.
-2. **Migrarea 2:** test cu o bază creată de codul AIW-02 (proiecte, coș, istoric), redeschisă cu codul nou. Datele sunt identice, iar lanțul jurnalului rămâne valid.
-3. **`core/memory.ts` + modulul `memory`:** operații, relații, revizii, arhivă, ștergere definitivă, cascada la ștergerea proiectului, cu teste unitare.
-4. **`buildContext`** + teste: ordinea, excluderile, limita de mărime.
-5. **Interfața:** ecranul memoriei, pagina intrării, legături, istoric, tabul Memorie.
-6. **Teste în browser + documentație + PR.**
+**Evenimentele noi din jurnal:**
+- `memory.created`, `.edited`, `.important`, `.archived`, `.restored`, `.confirmed`, `.rejected`, `.status`, `.purged`;
+- `link.created`, `link.removed`.
 
-## 8. Teste (pe iPhone 15, iPhone SE, Android, PC)
-**Unitare:**
-- validări (titlu gol sau prea lung, text prea lung, tip necunoscut);
-- relații interzise (cu sine, între proiecte, duplicate);
-- versiunile anterioare;
-- „înlocuiește” marchează automat decizia veche;
-- arhivă și restaurare;
-- ștergerea definitivă a intrării șterge legăturile și textul din jurnal;
-- ștergerea definitivă a proiectului șterge toată memoria lui (și din jurnal);
-- migrarea 1→2 păstrează datele;
-- o scriere care eșuează la jumătate nu lasă nimic;
-- `buildContext` (ordine, important primul, excluderi, limită, omisiuni raportate).
+## 5. Propunerile AI
+- Pot fi create doar programatic (`MemoryStore.propose`). În AIW-03 nu există nicio integrare AI.
+- Rămân `pending`: nu apar în memoria oficială, în căutare sau în context, și nu pot fi legate.
+- Au o vedere proprie, „De confirmat”, unde utilizatorul le poate:
+  - **confirma:** devin oficiale; data confirmării se păstrează, iar autorul rămâne „propunere AI”;
+  - **respinge:** sunt arhivate, nu pot fi restaurate în memorie și pot fi șterse definitiv.
 
-**În browser:**
-- adăugarea fiecărui tip;
-- editare cu versiuni;
-- legături în ambele sensuri;
-- filtre și căutare fără diacritice;
-- rezolvat / făcut / înlocuită;
-- arhivă, restaurare, ștergere definitivă cu a doua confirmare;
-- memorie separată între două proiecte (nimic nu „curge” dintr-unul în altul);
-- păstrarea după închiderea completă a browserului (Chrome și iPhone);
-- fără internet;
-- 1.000 de intrări într-un proiect (timpi măsurați);
-- spațiu plin (Chromium);
-- textul multi-linie pe iPhone (tastatura nu acoperă butonul);
-- diacritice și emoji;
-- HTML în texte afișat ca text simplu.
+## 6. Integritatea — ce garantează și ce NU
+- **Mecanismul:**
+  - fiecare eveniment are amprenta SHA-256 a celui anterior, iar conținutul are amprentă separată (poate fi șters definitiv fără ruperea lanțului);
+  - după fiecare scriere, ultimul `{seq, hash}` se salvează ca **punct de control** în `localStorage`, în afara IndexedDB;
+  - `verify` mai verifică dacă textul curent al fiecărei intrări e identic cu ultima ei versiune din jurnal, dacă fiecare legătură are ambele capete și dacă fiecare stare corespunde legăturilor.
+- **Detectează** (testat):
+  - o versiune veche modificată;
+  - un eveniment șters din mijloc;
+  - evenimente reordonate;
+  - ultimele evenimente tăiate (prin punctul de control);
+  - o intrare modificată direct în bază.
+- **NU detectează** (documentat și testat ca limită): pe cineva cu acces complet la dispozitiv care rescrie consecvent tot jurnalul **și** punctul de control (sau care șterge punctul de control și taie ultimele evenimente). Un lanț păstrat pe același dispozitiv nu poate fi o dovadă absolută. Interfața spune asta explicit.
 
-## 9. Riscuri
-| Risc | Măsură |
-| --- | --- |
-| Refactorizarea căii de scriere strică proiectele | pasul 1 separat; toate testele vechi trebuie să treacă neschimbate |
-| Migrarea pierde date | test cu o bază reală AIW-02; migrările nu modifică depozitele vechi |
-| Interfață prea complicată pe telefon | tipuri fixe, relații puține (4), legături adăugate doar din pagina intrării |
-| Memorie prea mare pentru un AI | `buildContext` cu limită și prioritate pentru „important” |
-| Date pierdute înainte de export | avertizările rămân; nu se publică înainte de AIW-04 |
-| Texte periculoase lipite în memorie | afișare doar ca text; căutarea cheilor secrete vine odată cu pachetul de context (AIW-05) |
+## 7. Contextul pentru alt AI (pregătire pentru AIW-05)
+`buildContext(proiect, intrări, legături, { maxChars = 24000, includeClosed = false })`:
+1. **Doar memoria oficială** (confirmată și nearhivată). Propunerile, intrările respinse și cele arhivate sunt excluse, apar în `omitted` cu motivul lor.
+2. **Deciziile înlocuite, problemele rezolvate și pașii făcuți** sunt excluși, cu excepția cazului `includeClosed`.
+3. **Ordinea secțiunilor:**
+   1. instrucțiuni;
+   2. obiective;
+   3. context;
+   4. decizii;
+   5. informații;
+   6. probleme;
+   7. pași.
 
-## 10. Decizii pentru Adrian și Gepeto
-1. Cele **7 tipuri** de memorie (obiective, instrucțiuni, decizii, informații, context, probleme, pași): le aprobați așa?
-2. Cele **4 relații** (decurge din, înlocuiește, rezolvă, legat de): ajung pentru început?
-3. **Tabul „Memorie”** deschide memoria ultimului proiect folosit, cu selector (recomandat), sau o listă a tuturor proiectelor?
-4. **Textul:** simplu, cu rânduri noi (recomandat), iar formatarea (titluri, liste) mai târziu?
-5. **Ștergerea** intrărilor: arhivă + ștergere definitivă cu a doua confirmare, ca la proiecte (recomandat)?
+   În fiecare secțiune: important, apoi cel mai recent, apoi `id`.
+4. **Limita** se măsoară pe ce ar primi AI-ul (proiect + secțiuni). Intrările se scot pe rând, de la cea mai puțin importantă:
+   - întâi cele neimportante, apoi cele importante;
+   - secțiunile de la coadă spre cap; în secțiune, de jos în sus;
+   - instrucțiunile la urmă.
+
+   Fiecare intrare scoasă apare în `omitted` cu motivul `sizeLimit`.
+5. **Doar intrările proiectului dat**, indiferent ce primește funcția.
+6. **Ieșire deterministă** (aceleași date = aceeași ieșire, octet cu octet, testat), cu `id`-uri stabile și proveniență. Memoria nu se modifică (testat).
+
+## 7b. Actualizările aplicației (constatat la testare)
+Aplicația funcționează fără internet, deci păstrează versiunea pe dispozitiv. După o actualizare, **prima deschidere poate arăta încă versiunea veche**; versiunea nouă preia controlul la una dintre deschiderile următoare (măsurat: 1–3 deschideri). Abia atunci rulează migrarea; datele nu sunt atinse între timp (testat).
+
+**Recomandare pentru AIW-07 (publicare):** un mesaj „Versiune nouă disponibilă — reîncarcă”.
+
+## 8. Teste
+Lista exactă și rezultatele sunt în `AIW-03_EXECUTION_LOG.md`, secțiunea „Raport de testare”.
+- **Teste unitare** (`npx vitest run`): migrare, izolare, intrări și versiuni, proveniență, relații, integritate, căutare, context.
+- **Teste în browser** (`npx playwright test`), pe iPhone 15 și iPhone SE (WebKit), Pixel 7 (Chromium) și PC:
+  - toate cele 7 tipuri; validare; versiuni; arhivă și ștergere; înlocuire; rezolvare; legături; căutare;
+  - propuneri; text periculos; izolare; tabul Memorie; cardul de pe pagina proiectului;
+  - integritate; context; tastatură; două file; tema întunecată; eroare de scriere;
+  - închiderea browserului; fără internet; migrarea din aplicația AIW-02 reală.
+
+## 9. Limite cunoscute
+- **Spațiul plin** e simulat în pagină (aceeași eroare `QuotaExceededError` pe care o dă browserul), pe toate motoarele. Limita reală de spațiu se poate micșora doar în Chromium (testat în AIW-02).
+- **Fără internet după actualizare:** motorul WebKit din teste nu rulează service workers. Pe iPhone, funcționarea fără internet și scutirea aplicației adăugate pe ecranul principal se verifică **manual** (lista de mai jos).
+- **Testele „iPhone” sunt simulări** (motorul WebKit din Playwright, cu dimensiunile iPhone), nu un iPhone fizic.
+- **Integritatea** nu e o dovadă absolută (secțiunea 6).
+- **Textele lungi** nu au formatare (decizie aprobată: text simplu).
+
+## 10. Verificări manuale pentru Adrian (înainte de publicare)
+1. **Pe un iPhone real, în Safari:**
+   - creează un proiect, adaugă câte o intrare de fiecare tip, înlocuiește o decizie, rezolvă o problemă;
+   - închide Safari complet, redeschide: totul e acolo.
+2. **Același iPhone, aplicația adăugată pe ecranul principal:**
+   - memoria creată în Safari NU apare (spații separate, avertizarea o spune);
+   - creează o intrare acolo, oprește internetul (mod avion), redeschide aplicația: merge și intrarea e acolo.
+3. **Pe Android (Chrome) și pe PC:** aceiași pași; în plus, deschide aplicația în două file și adaugă o intrare într-una: apare în cealaltă.
+4. **În Istoric și verificare:** „Verifică acum” dă „Istoricul e întreg”.
+5. **Tema întunecată a telefonului:** ecranele memoriei se citesc bine.

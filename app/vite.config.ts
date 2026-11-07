@@ -67,16 +67,24 @@ self.addEventListener("activate", (e) => {
       .then(() => self.clients.claim()),
   );
 });
+// Cache first; on a miss the network; offline, the app page from any cache of this app.
+// It must never answer with "nothing": during an update the previous cache may already be gone.
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET" || new URL(req.url).origin !== self.location.origin) return;
-  e.respondWith(
-    caches.match(req, { ignoreSearch: true, ignoreVary: true }).then((hit) => {
-      if (hit) return hit;
-      if (req.mode === "navigate") return caches.match("./");
-      return fetch(req);
-    }),
-  );
+  e.respondWith((async () => {
+    const hit = await caches.match(req, { ignoreSearch: true, ignoreVary: true });
+    if (hit) return hit;
+    try {
+      return await fetch(req);
+    } catch (err) {
+      if (req.mode === "navigate") {
+        const shell = await caches.match("./", { ignoreSearch: true, ignoreVary: true });
+        if (shell) return shell;
+      }
+      throw err;
+    }
+  })());
 });
 `;
 
@@ -84,7 +92,8 @@ const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), 
 
 export default defineConfig({
   base: "./",
-  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
+  // AIW_BUILD_TAG is used only by the update test, to build a "newer" version of the same app
+  define: { __APP_VERSION__: JSON.stringify(pkg.version + (process.env.AIW_BUILD_TAG ? `+${process.env.AIW_BUILD_TAG}` : "")) },
   plugins: [thirdPartyLicenses(), serviceWorker()],
   oxc: { jsx: { runtime: "automatic", importSource: "preact" } },
   build: { target: "es2020", sourcemap: false, assetsInlineLimit: 0, modulePreload: { polyfill: false } },

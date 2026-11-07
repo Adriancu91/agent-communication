@@ -6,8 +6,11 @@ import { existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const COMMIT = process.env.AIW02_COMMIT ?? "fe039c0";
 const app = resolve(new URL("..", import.meta.url).pathname);
+// AIW-02 as in PR #5. The tag "aiw-02-baseline" (if present) keeps it reachable after a squash merge;
+// otherwise the commit itself, reachable as long as the AIW-02 / AIW-03 history is kept.
+const has = (ref) => { try { execFileSync("git", ["-C", app, "rev-parse", "--verify", "--quiet", ref + "^{commit}"]); return true; } catch { return false; } };
+const COMMIT = process.env.AIW02_COMMIT ?? (has("aiw-02-baseline") ? "aiw-02-baseline" : "fe039c0");
 const out = join(app, ".baseline", "aiw02-dist");
 const repo = execFileSync("git", ["-C", app, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
 const wt = mkdtempSync(join(tmpdir(), "aiw02-"));

@@ -107,10 +107,14 @@ export function isOfficial(e: MemoryEntry): boolean {
   return e.confirmation === "confirmed" && !e.archived;
 }
 
-/** The status an entry must have, given the links pointing to it. */
-export function statusFromLinks(entryId: string, links: MemoryLink[]): EntryStatus {
-  if (links.some((l) => l.to === entryId && l.type === "replaces")) return "replaced";
-  if (links.some((l) => l.to === entryId && l.type === "resolves")) return "resolved";
+/**
+ * The status an entry must have, given the links pointing to it. Only links coming from OFFICIAL
+ * entries count: if the decision that replaced this one is archived, this one is current again.
+ * `official(id)` says whether the source entry is official (confirmed, not archived).
+ */
+export function statusFromLinks(entryId: string, links: MemoryLink[], official: (id: string) => boolean = () => true): EntryStatus {
+  if (links.some((l) => l.to === entryId && l.type === "replaces" && official(l.from))) return "replaced";
+  if (links.some((l) => l.to === entryId && l.type === "resolves" && official(l.from))) return "resolved";
   return "active";
 }
 

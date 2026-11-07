@@ -249,7 +249,7 @@ describe("provenance and AI proposals", () => {
     expect(prop).toMatchObject({ author: "ai", confirmation: "pending", confirmedAt: null, source: "conversația din 7 nov. (ChatGPT)" });
     const list = await memory.list(p.id);
     expect(searchMemory(p.id, list, "propunere")).toEqual([]);
-    expect(buildContext(p, list, []).sections).toEqual([]);
+    expect(buildContext(p, list, []).payload.sections).toEqual([]);
     expect(buildContext(p, list, []).omitted).toEqual([expect.objectContaining({ id: prop.id, reason: "notConfirmed" })]);
     const user = await memory.create(p.id, { category: "fact", title: "F" });
     await expect(memory.link(prop.id, user.id, "related_to")).rejects.toMatchObject({ reason: "notAllowed" });
@@ -257,7 +257,7 @@ describe("provenance and AI proposals", () => {
     expect(ok.confirmation).toBe("confirmed");
     expect(ok.confirmedAt).not.toBeNull();
     expect(ok.author).toBe("ai"); // provenance is kept after confirmation
-    expect(buildContext(p, await memory.list(p.id), []).sections[0].items[0]).toMatchObject({ id: prop.id, author: "ai" });
+    expect(buildContext(p, await memory.list(p.id), []).payload.sections[0].items[0]).toMatchObject({ id: prop.id, author: "ai" });
   });
 
   it("a rejected proposal is never promoted silently and cannot be restored to memory", async () => {
@@ -267,7 +267,7 @@ describe("provenance and AI proposals", () => {
     expect(r).toMatchObject({ confirmation: "rejected", archived: true });
     await expect(memory.confirm(prop.id)).rejects.toMatchObject({ kind: "conflict" });
     expect((await memory.restore(prop.id)).archived).toBe(true);
-    expect(buildContext(p, await memory.list(p.id), []).sections).toEqual([]);
+    expect(buildContext(p, await memory.list(p.id), []).payload.sections).toEqual([]);
     await memory.purge(prop.id); // can be deleted from the archive
     expect(await memory.list(p.id)).toEqual([]);
   });
@@ -366,7 +366,7 @@ describe("integrity (tamper detection)", () => {
     });
     const r = await memory.verify(p.id);
     expect(r.ok).toBe(false);
-    expect(r.problem).toMatch(/conținutul evenimentului \d+ a fost modificat/);
+    expect(r.problem).toBe("contentModified");
   });
 
   it("a removed historical record is detected (gap in the chain)", async () => {
@@ -374,7 +374,7 @@ describe("integrity (tamper detection)", () => {
     await raw(["events"], "readwrite", (tx) => tx.objectStore("events").delete(3));
     const r = await memory.verify(p.id);
     expect(r.ok).toBe(false);
-    expect(r.problem).toMatch(/lipsește evenimentul 3/);
+    expect(r).toMatchObject({ problem: "gap", at: 3 });
   });
 
   it("removing the most recent records is detected by the checkpoint kept outside the database", async () => {
@@ -462,10 +462,10 @@ describe("context preparation (for AIW-05)", () => {
     const entries = await memory.list(s.p.id);
     const links = await memory.links(s.p.id);
     const c = buildContext(s.p, entries, links);
-    expect(c.sections.map((x) => x.category)).toEqual(["instruction", "goal", "decision", "fact", "step"]);
-    expect(c.sections.find((x) => x.category === "fact")!.items.map((i) => i.title)).toEqual(["Fapt important", "Fapt mic"]);
-    expect(c.sections.find((x) => x.category === "decision")!.items[0].links).toEqual([{ type: "derived_from", direction: "out", id: s.g.id, title: "Obiectiv principal" }]);
-    expect(c.sections.flatMap((x) => x.items).every((i) => i.author === "user" && i.id.startsWith("M-"))).toBe(true);
+    expect(c.payload.sections.map((x) => x.category)).toEqual(["instruction", "goal", "decision", "fact", "step"]);
+    expect(c.payload.sections.find((x) => x.category === "fact")!.items.map((i) => i.title)).toEqual(["Fapt important", "Fapt mic"]);
+    expect(c.payload.sections.find((x) => x.category === "decision")!.items[0].links).toEqual([{ type: "derived_from", direction: "out", id: s.g.id, title: "Obiectiv principal" }]);
+    expect(c.payload.sections.flatMap((x) => x.items).every((i) => i.author === "user" && i.id.startsWith("M-"))).toBe(true);
     expect(c.omitted.map((o) => [o.title, o.reason]).sort()).toEqual([["Context vechi", "archived"], ["Problemă rezolvată", "closed"], ["Propunere", "notConfirmed"]]);
     // same input, any order → byte-for-byte the same result
     const again = buildContext(s.p, [...entries].reverse(), [...links].reverse());
@@ -493,5 +493,84 @@ describe("context preparation (for AIW-05)", () => {
     const before = JSON.stringify([await memory.list(s.p.id), await memory.links(s.p.id), await base.journal()]);
     buildContext(s.p, await memory.list(s.p.id), await memory.links(s.p.id), { maxChars: 50 });
     expect(JSON.stringify([await memory.list(s.p.id), await memory.links(s.p.id), await base.journal()])).toBe(before);
+  });
+});
+
+describe("review findings (independent review, 7 Nov 2026)", () => {
+  it("an integrity check during a write in another tab gives no false alarm", async () => {
+    const p = await projects.create("P");
+    await memory.create(p.id, { category: "fact", title: "F" });
+    const tab2 = new MemoryStore(new JournaledStore(dbName, tick));
+    const [r] = await Promise.all([memory.verify(p.id), tab2.create(p.id, { category: "fact", title: "în paralel" })]);
+    expect(r).toMatchObject({ ok: true });
+    expect(await memory.verify(p.id)).toMatchObject({ ok: true, checkpoint: "ok" });
+    tab2.base.close();
+  });
+
+  it("a failed request inside a write aborts everything (nothing half-saved, no orphan event)", async () => {
+    const p = await projects.create("P");
+    const e = await memory.create(p.id, { category: "fact", title: "F" });
+    const before = (await base.journal()).length;
+    await expect(base.write(["memory"], async () => ({
+      result: null,
+      events: [{ type: "memory.edited", projectId: p.id, entityId: e.id, data: { title: "x", body: "", version: 2 } }],
+      apply: (w) => void w.objectStore("memory").add({ ...e }), // same key: the request fails
+    }))).rejects.toBeTruthy();
+    expect((await base.journal()).length).toBe(before);
+    expect(await memory.verify(p.id)).toMatchObject({ ok: true });
+  });
+
+  it("archiving the decision that replaced another makes the old one current again; restoring reverses it", async () => {
+    const p = await projects.create("P");
+    const a = await memory.create(p.id, { category: "decision", title: "A" });
+    const { entry: b } = await memory.replaceDecision(a.id, { title: "B" }, "motiv");
+    expect((await memory.get(a.id))!.status).toBe("replaced");
+    await memory.archive(b.id);
+    expect((await memory.get(a.id))!.status).toBe("active");
+    expect(buildContext(p, await memory.list(p.id), await memory.links(p.id)).payload.sections[0].items.map((i) => i.title)).toEqual(["A"]);
+    await memory.restore(b.id);
+    expect((await memory.get(a.id))!.status).toBe("replaced");
+    expect(await memory.verify(p.id)).toMatchObject({ ok: true, inconsistencies: [] });
+  });
+
+  it("the payload that may be sent never contains pending, rejected or archived titles", async () => {
+    const p = await projects.create("P");
+    await memory.create(p.id, { category: "fact", title: "Oficial" });
+    await memory.propose(p.id, { category: "fact", title: "TITLU PROPUNERE" });
+    const arch = await memory.create(p.id, { category: "fact", title: "TITLU ARHIVAT" });
+    await memory.archive(arch.id);
+    const c = buildContext(p, await memory.list(p.id), []);
+    expect(serializeContext(c)).toContain("Oficial");
+    expect(serializeContext(c)).not.toMatch(/TITLU PROPUNERE|TITLU ARHIVAT/);
+    expect(c.omitted.map((o) => o.title).sort()).toEqual(["TITLU ARHIVAT", "TITLU PROPUNERE"]); // only in the user's report
+  });
+
+  it("missing checkpoint = partial check (not a clean bill of health); hidden old content is reported", async () => {
+    const p = await projects.create("P");
+    const e = await memory.create(p.id, { category: "fact", title: "F", body: "v1" });
+    await memory.edit(e.id, { title: "F", body: "v2" });
+    localStorage.clear();
+    expect(await memory.verify(p.id)).toMatchObject({ checkpoint: "missing" });
+    await raw(["events"], "readwrite", async (tx) => {
+      const all = await req(tx.objectStore("events").getAll());
+      const v1 = all.find((x: { data: { body?: string } | null }) => x.data?.body === "v1");
+      tx.objectStore("events").put({ ...v1, data: null }); // an old version silently "erased"
+    });
+    const r = await memory.verify(p.id);
+    expect(r.ok).toBe(false);
+    expect(r.inconsistencies).toEqual([`erased:${e.id}`]);
+  });
+
+  it("the memory of a project in the trash can be read but not changed", async () => {
+    const p = await projects.create("P");
+    const a = await memory.create(p.id, { category: "fact", title: "A" });
+    const b = await memory.create(p.id, { category: "goal", title: "B" });
+    await projects.trash(p.id);
+    await expect(memory.edit(a.id, { title: "x", body: "" })).rejects.toMatchObject({ kind: "conflict" });
+    await expect(memory.link(a.id, b.id, "related_to")).rejects.toMatchObject({ kind: "conflict" });
+    await expect(memory.archive(a.id)).rejects.toMatchObject({ kind: "conflict" });
+    expect((await memory.list(p.id)).length).toBe(2);
+    await projects.restore(p.id);
+    expect((await memory.edit(a.id, { title: "x", body: "" })).title).toBe("x");
   });
 });

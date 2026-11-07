@@ -78,7 +78,13 @@ for (const engine of ["chromium", "webkit"] as const) {
       await expect.poll(() => up(url), { timeout: 20_000 }).toBe(200);
       ctx = await launcher.launchPersistentContext(profile, { ...opts, headless: true });
       p = ctx.pages()[0] ?? (await ctx.newPage());
-      await p.goto(url + "#/proiecte");
+      // The AIW-02 offline worker (never published) can answer the first open with an error while the
+      // new version installs (fixed in AIW-03, see the update test below). If that happens, open again.
+      await p.goto(url + "#/proiecte").catch(async (err) => {
+        console.log(`${engine}: vechiul service worker AIW-02 a răspuns cu eroare la prima deschidere: ${String(err).split("\n")[0]}`);
+        await p.waitForTimeout(1000);
+        await p.goto(url + "#/proiecte");
+      });
       // Real update behaviour of an offline-capable app: where a service worker exists (Chromium),
       // the first open may still run the cached AIW-02 code while the new version installs in the
       // background; it takes over at the next open. Until then the database stays at version 1.
@@ -123,6 +129,59 @@ for (const engine of ["chromium", "webkit"] as const) {
       await p.locator(".mem-links a").first().click();
       await p.locator('[data-action="verify"]').click();
       await expect(p.locator('[data-integrity="ok"]')).toBeVisible();
+      await ctx.close();
+    } finally {
+      stop(server);
+      rmSync(profile, { recursive: true, force: true });
+    }
+  });
+}
+
+// The AIW-03 offline worker must never show an error page during an update (defect of the AIW-01/02
+// worker found by CI on the iPhone engine): version N is used, the browser is closed, version N+1 is
+// served at the same address, and the app is reopened several times.
+for (const engine of ["chromium", "webkit"] as const) {
+  test(`an update never shows an error page (${engine === "webkit" ? "iPhone engine" : "Chrome/Android engine"})`, async ({}, info) => {
+    test.skip(info.project.name !== "pc", "runs once per engine");
+    test.setTimeout(120_000);
+    const next = join(APP, ".baseline", "next-dist");
+    const build = spawn(join(APP, "node_modules", ".bin", "vite"), ["build", "--outDir", next, "--emptyOutDir"], { cwd: APP, stdio: "ignore", env: { ...process.env, AIW_BUILD_TAG: "next" } });
+    await new Promise((r) => build.on("exit", r));
+    const port = 5600 + Math.floor(Math.random() * 300);
+    const url = `http://localhost:${port}/`;
+    const profile = mkdtempSync(join(tmpdir(), `aiw-upd-${engine}-`));
+    const launcher = engine === "webkit" ? webkit : chromium;
+    const opts = engine === "webkit" ? { ...devices["iPhone 15"] } : {};
+    let server = serve(join(APP, "dist"), port);
+    try {
+      await expect.poll(() => up(url), { timeout: 20_000 }).toBe(200);
+      let ctx = await launcher.launchPersistentContext(profile, { ...opts, headless: true });
+      let p = ctx.pages()[0] ?? (await ctx.newPage());
+      await p.goto(url + "#/setari");
+      await p.waitForTimeout(1500); // let the offline worker install
+      await ctx.close();
+      stop(server);
+      await expect.poll(() => up(url), { timeout: 10_000 }).toBe(0);
+      server = serve(next, port);
+      await expect.poll(() => up(url), { timeout: 20_000 }).toBe(200);
+      ctx = await launcher.launchPersistentContext(profile, { ...opts, headless: true });
+      p = ctx.pages()[0] ?? (await ctx.newPage());
+      const errors: string[] = [];
+      p.on("pageerror", (e) => errors.push(String(e)));
+      let sawNext = false;
+      let opens = 0;
+      for (let i = 0; i < 10 && !sawNext; i++) {
+        opens++;
+        // a real (re)load each time; it throws on an error page, which fails the test
+        if (i === 0) await p.goto(url + "#/setari");
+        else await p.reload();
+        await expect(p.locator("h1")).toBeVisible();
+        sawNext = (await p.locator("main").textContent())!.includes("+next");
+        if (!sawNext) await p.waitForTimeout(1500);
+      }
+      console.log(`${engine}: versiunea nouă vizibilă: ${sawNext}, după ${opens} deschideri, fără nicio pagină de eroare`);
+      expect(sawNext).toBe(true);
+      expect(errors).toEqual([]);
       await ctx.close();
     } finally {
       stop(server);

@@ -29,7 +29,24 @@ export interface Checkpoint {
 }
 
 export interface IntegrityReport extends ChainReport {
+  /**
+   * ok       — the chain matches the checkpoint kept outside the database;
+   * missing  — no checkpoint on this device (e.g. site data partly cleared): only a PARTIAL check is possible;
+   * behind   — the database has fewer events than this device last saw (latest events removed / rolled back);
+   * mismatch — the checkpoint does not match the history.
+   */
   checkpoint: "ok" | "missing" | "behind" | "mismatch";
+}
+
+/** Compares a journal snapshot with a checkpoint read BEFORE the snapshot (it only moves forward). */
+export async function checkJournal(events: JournalEvent[], cp: Checkpoint | null): Promise<IntegrityReport> {
+  const chain = await verifyChain(events);
+  let checkpoint: IntegrityReport["checkpoint"];
+  if (!cp) checkpoint = events.length === 0 ? "ok" : "missing";
+  else if (cp.seq === 0) checkpoint = "ok";
+  else if (!events[cp.seq - 1]) checkpoint = "behind";
+  else checkpoint = events[cp.seq - 1].hash === cp.hash ? "ok" : "mismatch";
+  return { ...chain, ok: chain.ok && (checkpoint === "ok" || checkpoint === "missing"), checkpoint };
 }
 
 type Listener = () => void;
@@ -166,22 +183,14 @@ export class JournaledStore {
 
   /**
    * Verifies the chain and compares it with the checkpoint kept outside the database.
+   * The checkpoint is read first: a write that lands meanwhile can only make the journal longer
+   * than the checkpoint, never shorter, so it cannot cause a false alarm.
    * Detects edited, removed or reordered events, and a journal that lost its latest events.
    * It cannot detect someone who rewrites the whole database AND the checkpoint consistently.
    */
   async verify(): Promise<IntegrityReport> {
-    const events = await this.journal();
-    const chain = await verifyChain(events);
     const cp = this.checkpoint();
-    let checkpoint: IntegrityReport["checkpoint"] = "missing";
-    if (cp) {
-      const at = events[cp.seq - 1];
-      if (cp.seq === 0 && events.length === 0) checkpoint = "ok";
-      else if (!at) checkpoint = "behind"; // the database has fewer events than this device saw
-      else checkpoint = at.hash === cp.hash ? "ok" : "mismatch";
-    } else if (events.length === 0) checkpoint = "ok";
-    const ok = chain.ok && (checkpoint === "ok" || checkpoint === "missing");
-    return { ...chain, ok, checkpoint };
+    return checkJournal(await this.journal(), cp);
   }
 
   close() {

@@ -104,3 +104,39 @@ Raportul anterior („98 de teste”) e confirmat: 26 + 72.
   - scrierea întreruptă;
   - două file;
   - cele 7 teste de integritate.
+
+## Faza 6–7 — Interfața și testele în browser (7 nov.)
+- `ui/memory.tsx`:
+  - tabul Memorie, cu selector și revenire sigură;
+  - memoria proiectului: 7 categorii, filtre, căutare cu versiuni anterioare, De confirmat, Arhivă;
+  - pagina intrării: proveniență, versiuni, legături, înlocuire, rezolvare, arhivă, ștergere;
+  - istoric și integritate; previzualizarea contextului; cardul de memorie pe pagina proiectului.
+- **D13 — Fără iconița de fixare la intrările importante** (doar eticheta „★ Important”): la proiecte, iconița înseamnă „fixat sus”, iar cele două nu trebuie confundate.
+- **D14 — Dialogurile redau focalizarea butonului care le-a deschis.** Găsit de testul de tastatură: după Escape, focalizarea se pierdea.
+- **D15 — Ultimul proiect folosit se salvează sincron** (`useLayoutEffect`). Găsit de un test instabil (1 din 4 rulări): tabul Memorie putea deschide proiectul anterior dacă era apăsat imediat.
+- **D16 — Propunerile AI în testele din browser** sunt create cu aceleași funcții din `core` (aceeași înregistrare, aceeași amprentă) prin `tests/e2e/helpers.ts → seedProposal`. Nu există o cale de creare din interfață, fiindcă nu există încă o integrare AI.
+- **D17 — Eroarea „spațiu plin” în testele din browser** e simulată în pagină (aceeași `DOMException QuotaExceededError` pe care o dă browserul), ca să se testeze și pe motorul iPhone. Limita reală a fost testată în AIW-02, doar pe Chromium.
+- **D18 — Migrarea în browser real** (`tests/e2e/migration.spec.ts`, `scripts/build-aiw02-baseline.mjs`): aplicația AIW-02 e construită din `fe039c0`, folosită, apoi înlocuită cu AIW-03 la aceeași adresă, cu același profil de browser.
+  - **Constatat:** aplicația ține versiunea pe dispozitiv, deci versiunea nouă preia controlul după 1–3 deschideri. Datele nu sunt atinse între timp.
+  - **Recomandare AIW-07:** mesajul „Versiune nouă — reîncarcă”.
+
+## Faza 8 — Revizia independentă (alt agent, care nu a scris codul) și reparațiile
+| # | Constatare | Gravitate | Reparat |
+| --- | --- | --- | --- |
+| 1 | `verify` citea jurnalul, apoi punctul de control: o scriere făcută între timp (în altă filă) dădea o alarmă falsă „istoricul nu se potrivește”; verificarea memoriei folosea mai multe tranzacții | medie | punctul de control e citit **înainte**; verificarea memoriei folosește **o singură tranzacție** (test „no false alarm”) |
+| 2 | `done()` anula comportamentul implicit la eroarea unei cereri: o cerere eșuată în tranzacție nu oprea tranzacția, deci jurnalul putea primi un eveniment fără înregistrare (moștenit din AIW-02) | medie | eroarea unei cereri oprește acum toată tranzacția (test „a failed request inside a write aborts everything”) |
+| 3 | Arhivarea deciziei care o înlocuise pe alta lăsa proiectul fără decizie curentă | medie | starea se calculează doar din legăturile care pornesc de la intrări oficiale; arhivarea, restaurarea, confirmarea și respingerea recalculează starea țintelor (test) |
+| 4 | Contextul serializat conținea și titlurile propunerilor și ale intrărilor arhivate (în raportul de omisiuni) | medie | separat: `payload` (singurul care se poate trimite) și raportul pentru utilizator (test) |
+| 5 | Fără punct de control, verificarea arăta „întreg” cu verde; ascunderea conținutului unei versiuni vechi nu era semnalată | mică-medie | stare nouă „Verificare parțială”; conținutul șters al unei intrări care încă există e raportat; numărul de conținuturi șterse e afișat; textul limitelor e completat (teste) |
+| 6 | Memoria unui proiect din coș se putea modifica | mică | doar citire, în serviciu și în interfață (teste) |
+| 7 | Problemele de integritate apăreau mereu în română | mică | coduri, traduse în interfață |
+| 8 | O eroare la verificare nu afișa nimic | mică | mesaj de eroare |
+| 9 | Un comentariu din `context.ts` contrazicea codul | mică | corectat |
+| 10 | Commit-ul AIW-02 folosit la testul de migrare poate deveni inaccesibil după o îmbinare „squash” | mică | scriptul folosește eticheta `aiw-02-baseline` dacă există, altfel `fe039c0`. Urcarea etichetei e blocată de proxy-ul sesiunii, deci rămâne **verificare manuală pentru Adrian** (nu îmbina AIW-02 prin „squash”, sau creează eticheta) |
+
+**Constatare suplimentară, găsită de CI (GitHub Actions) pe motorul iPhone.** Componenta de funcționare offline (moștenită din AIW-01) putea răspunde cu „nimic” în timpul unei actualizări, iar utilizatorul vedea o pagină de eroare.
+- **Reparat:** la o căutare fără rezultat în cache, folosește rețeaua; fără rețea, folosește pagina aplicației din orice cache. Niciodată nu răspunde cu „nimic”.
+- **Test nou:** „an update never shows an error page” (Chrome și iPhone), cu versiunea N → N+1 și redeschideri repetate.
+- Versiunea AIW-02 (nepublicată) are încă defectul; testul de migrare îl tolerează la prima deschidere și îl notează.
+
+**După reparații:** 63 de teste unitare și 159 în browser trec (`npm run verify`, ieșire 0).
