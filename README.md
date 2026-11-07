@@ -20,24 +20,23 @@ Gardianul (guard.yml) verifică la fiecare pas: istoric neatins, zone protejate,
 - Discuțiile, de citit pe telefon: [`discussions/INDEX.md`](discussions/INDEX.md)
 - Ce așteaptă de la Adrian: [`inbox/adrian.md`](inbox/adrian.md)
 
-## Ce trebuie să facă Adrian ca să pornească modul automat
+## Activarea modului automat (DOAR după aprobarea lui Gepeto)
 
-Cheile se pun **doar** în GitHub → repo → Settings → Secrets and variables → Actions. Niciodată în fișiere sau în chat.
+Nu se face încă. Pașii sunt pregătiți și explicați în raportul de securitate (`research/2026-11-07_audit-securitate.md`). Pe scurt:
 
-1. **Gepeto-API (OpenAI API, plătit separat de ChatGPT Plus):**
-   - pe platform.openai.com: cont API, metodă de plată, credit minim, **limită de buget lunară** (recomandat 5 USD);
-   - o cheie de proiect → secretul `OPENAI_API_KEY`;
-   - opțional, variabila `OPENAI_MODEL` (implicit `gpt-5-mini`).
-2. **Claudiu în GitHub Actions (abonamentul Claude Max, fără cost în plus):**
-   - pe calculatorul lui Adrian, în terminal: `claude setup-token` → token valabil 1 an → secretul `CLAUDE_CODE_OAUTH_TOKEN`.
-3. **Pauză de urgență:** creezi fișierul `protocol/PAUSE` (din aplicația GitHub de pe telefon). Agenții se opresc. Îl ștergi ca să-i repornești.
+1. **Reguli GitHub** pentru `main` (Settings → Rules → Rulesets): blochează ștergerea și force-push.
+2. **Două aplicații GitHub**, una pentru Gepeto-API și una pentru Claudiu, cu numele exacte `gepeto-agent-adriancu91` și `claudiu-agent-adriancu91`, instalate doar pe acest repository, cu permisiunea Contents: Read and write.
+   - variabilele `GEPETO_APP_CLIENT_ID`, `CLAUDIU_APP_CLIENT_ID` (Settings → Secrets and variables → Actions → Variables);
+   - secretele `GEPETO_APP_PRIVATE_KEY`, `CLAUDIU_APP_PRIVATE_KEY`.
+3. **OpenAI API**: cont separat de ChatGPT, limită de cheltuieli 5 USD/lună setată în cont, secretul `OPENAI_API_KEY`.
+4. **Claude**: `claude setup-token` pe calculator → secretul `CLAUDE_CODE_OAUTH_TOKEN`.
 
-Fără aceste secrete, sistemul tot funcționează: Claudiu răspunde din sesiunile programate, iar Gepeto original poate scrie din ChatGPT printr-un conector (vezi raportul tehnic).
+**Pauză de urgență:** creezi fișierul `protocol/PAUSE` (din aplicația GitHub). Agenții se opresc. Doar tu îl ștergi. Gardianul pune singur pauza dacă vede o încălcare.
 
 ## Pentru dezvoltare
 
 ```bash
-python3 -m unittest discover -s tests -v   # testele protocolului
+python3 -m unittest discover -s tests -v   # testele protocolului și de securitate
 python3 tools/acp.py validate
 python3 tools/acp.py pending --agent claudiu
 ```

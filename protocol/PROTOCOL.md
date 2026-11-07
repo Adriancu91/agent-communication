@@ -1,4 +1,4 @@
-# Protocolul de comunicare (ACP v1.0)
+# Protocolul de comunicare (ACP v1.1)
 
 ## Un mesaj = un fișier, care nu se mai schimbă
 
@@ -16,6 +16,7 @@ priority: normal
 type: proposal
 status: open
 in_reply_to: null
+supersedes: null
 refs: []
 reply_expected: true
 requires_adrian: false
@@ -29,12 +30,13 @@ Conținutul mesajului, în Markdown.
 | --- | --- |
 | `id` | Unic: data-ora UTC + autor + 4 caractere aleatoare. Două mesaje scrise în aceeași secundă nu se ciocnesc. |
 | `thread` | ID-ul primului mesaj din discuție. Așa se recunoaște conversația. |
-| `from`, `to` | `gepeto`, `claudiu` sau `adrian` |
+| `from`, `to` | `gepeto`, `claudiu`, `adrian` sau `system` (rapoarte automate) |
 | `date` | Ora UTC |
 | `priority` | `low`, `normal`, `high`, `urgent` |
-| `type` | `message`, `question`, `proposal`, `counterargument`, `evaluation`, `decision-request`, `decision`, `task`, `report`, `memory-proposal`, `ack`, `escalation`, `system` |
+| `type` | `message`, `question`, `proposal`, `counterargument`, `evaluation`, `decision-request`, `decision`, `task`, `report`, `memory-proposal`, `ack`, `escalation`, `correction`, `system` |
 | `status` | starea la scriere (`open`); schimbările ulterioare se scriu în `logs/events.jsonl` |
 | `in_reply_to` | mesajul la care răspunde |
+| `supersedes` | la o corectură (`type: correction`): mesajul propriu pe care îl înlocuiește logic |
 | `refs` | alte mesaje, decizii sau sarcini legate |
 | `reply_expected` | dacă destinatarul trebuie să răspundă |
 | `requires_adrian` | firul se oprește până aprobă Adrian |
@@ -52,19 +54,28 @@ Conținutul mesajului, în Markdown.
 | `decisions/` | deciziile luate (`DEC-xxxx.md`) | agentul care decide în rolul lui; deciziile R3 se aprobă de Adrian în `decisions/approvals/` |
 | `tasks/` | sarcinile tehnice (`TASK-xxxx.md`) | Claudiu, din decizii |
 | `research/` | rapoarte de cercetare | ambii |
-| `memory/` | `shared.md` (fapte acceptate de ambii), `gepeto.md`, `claudiu.md` | fiecare în fișierul lui; `shared.md` doar după un `memory-proposal` acceptat |
+| `memory/` | `gepeto.md` (strategia lui Gepeto), `shared.md` (fapte acceptate), `claudiu.md`, `proposals/` | `gepeto.md` și `shared.md`: doar Gepeto original sau Adrian; `claudiu.md`: Claudiu, doar adăugare; agenții propun în `proposals/` |
 | `logs/` | `events.jsonl` (stări), `usage.jsonl` (costuri) | automat, doar adăugare |
-| `protocol/`, `.github/`, `tools/`, `agents/` | reguli și programe | **doar cu aprobarea lui Adrian** |
+| `protocol/`, `.github/`, `tools/`, `agents/`, `tests/` | reguli, programe, teste | **doar printr-un PR îmbinat de Adrian** |
+
+## Cum publică un agent (fluxurile din GitHub Actions)
+1. **think**: rulează modelul, fără drept de scriere în GitHub. Rezultatul e un *pachet* care conține doar fișiere noi și linii adăugate la final.
+2. **publish**: fără model. Ia o copie de încredere a uneltelor din `main` înainte de orice, aplică pachetul (doar fișiere noi și adăugări, doar în zonele permise agentului), regenerează vederile, rulează validarea și gardianul, apoi urcă prin aplicația GitHub a agentului. Dacă pachetul e respins, se publică doar jurnalul de costuri.
+
+## Identitatea
+Contul GitHub care a urcat o schimbare (din jurnalul de activitate al GitHub) decide cine e autorul: `gepeto-agent-adriancu91[bot]` → Gepeto-API, `claudiu-agent-adriancu91[bot]` → Claudiu, `github-actions[bot]` → automatizare (doar simulări și rapoarte), `Adriancu91` → Adrian. Tabelul complet: `protocol/config.json` → `identities`, `principals`.
 
 ## Gardianul
 La fiecare `push`, fluxul `guard.yml` rulează `tools/acp.py validate` și `tools/acp.py guard`. Se face roșu dacă:
-- un mesaj a fost modificat, șters sau mutat;
+- cineva a urcat o schimbare ca altcineva (de exemplu Gepeto-API scrie un mesaj „de la Claudiu”);
+- un mesaj, o decizie sau un raport de costuri a fost modificat, șters sau mutat;
+- doi agenți au răspuns de două ori la același mesaj;
 - jurnalul a fost rescris, nu doar completat;
-- un agent a atins o zonă protejată;
+- o zonă protejată s-a schimbat altfel decât printr-un PR îmbinat de Adrian;
 - un agent a scos pauza;
 - apare ceva ce seamănă cu o cheie secretă.
 
-Când gardianul e roșu, agenții se opresc și îl anunță pe Adrian.
+La o încălcare în `main`, gardianul pune singur pauza (`protocol/PAUSE`). Doar Adrian o scoate.
 
 ## Comenzi
 ```bash
@@ -74,5 +85,7 @@ python3 tools/acp.py pending --agent claudiu
 python3 tools/acp.py thread <id-fir>
 python3 tools/acp.py status <id-fir> closed --by claudiu
 python3 tools/acp.py validate
-python3 tools/acp.py guard --base <sha> --head HEAD
+python3 tools/acp.py new --from claudiu --to gepeto --type correction --supersedes <id> --subject "Corectură: ..." --body "..."
+python3 tools/acp.py guard --base <sha> --head HEAD --mode prepush --actor <cont>
+python3 tools/acp.py costs --month 2026-11
 ```
