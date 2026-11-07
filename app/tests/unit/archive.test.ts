@@ -338,3 +338,34 @@ async function rawPut(d: Device, store: string, value: unknown) {
   });
 }
 
+
+describe("every byte of an exported archive is protected", () => {
+  it("flipping any single byte makes the import refuse the archive", async () => {
+    const a = device();
+    const p = await a.projects.create("Mic");
+    await a.memory.create(p.id, { category: "goal", title: "Un obiectiv" });
+    const { bytes } = await a.transfer.exportArchive([p.id]);
+    const b = device();
+    const accepted: number[] = [];
+    for (let i = 0; i < bytes.length; i++) {
+      const bad = bytes.slice();
+      bad[i] ^= 0x01;
+      try {
+        await b.transfer.preview(bad);
+        accepted.push(i);
+      } catch {
+        /* refused: expected */
+      }
+    }
+    // only bytes that carry no meaning may be changed: the file dates (DOS time/date, local + central)
+    // and the "version made by / needed" fields; everything else is detected
+    const v = new DataView(bytes.buffer);
+    const harmless = new Set<number>();
+    for (let i = 0; i + 4 <= bytes.length; i++) {
+      const sig = v.getUint32(i, true);
+      if (sig === 0x04034b50) [4, 5, 10, 11, 12, 13].forEach((o) => harmless.add(i + o));
+      if (sig === 0x02014b50) [4, 5, 6, 7, 12, 13, 14, 15, 34, 35, 36, 37, 38, 39, 40, 41].forEach((o) => harmless.add(i + o));
+    }
+    expect(accepted.filter((i) => !harmless.has(i))).toEqual([]);
+  }, 60_000);
+});

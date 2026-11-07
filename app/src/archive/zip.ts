@@ -251,6 +251,8 @@ export async function readZip(bytes: Uint8Array, limits: ZipLimits = DEFAULT_LIM
     p += 46 + nlen + xlen + clen;
 
     if (flags & 0x0001) throw new ZipError("encrypted", name);
+    // known option bits only: deflate level (1-2), data descriptor (3), UTF-8 names (11)
+    if (flags & ~0x080e) throw new ZipError("unsupportedMethod", `flags ${flags}`);
     if (csize === 0xffffffff || usize === 0xffffffff || lho === 0xffffffff) throw new ZipError("zip64");
     if (name.endsWith("/") && usize === 0) continue; // a folder entry added by some zip tools: nothing to read
     if (!isSafeName(name)) throw new ZipError("badName", name.slice(0, 60));
@@ -261,7 +263,17 @@ export async function readZip(bytes: Uint8Array, limits: ZipLimits = DEFAULT_LIM
     if (total > limits.maxTotalBytes) throw new ZipError("tooLarge", "total");
 
     if (lho + 30 > cdOffset || v.getUint32(lho, true) !== 0x04034b50) throw new ZipError("truncated", "local header");
-    const start = lho + 30 + v.getUint16(lho + 26, true) + v.getUint16(lho + 28, true);
+    // the local header must agree with the central directory (any difference = a damaged archive)
+    const lflags = v.getUint16(lho + 6, true);
+    const lnlen = v.getUint16(lho + 26, true);
+    if (v.getUint16(lho + 8, true) !== method || lflags !== flags || lnlen !== nlen) throw new ZipError("sizeMismatch", `local header ${name}`);
+    if (!(lflags & 0x0008) && (v.getUint32(lho + 14, true) !== crc || v.getUint32(lho + 18, true) !== csize || v.getUint32(lho + 22, true) !== usize)) {
+      throw new ZipError("sizeMismatch", `local header ${name}`);
+    }
+    const lname = bytes.subarray(lho + 30, lho + 30 + lnlen);
+    const cname = bytes.subarray(p - clen - xlen - nlen, p - clen - xlen);
+    if (lname.length !== cname.length || lname.some((b, i) => b !== cname[i])) throw new ZipError("badName", `local header ${name}`);
+    const start = lho + 30 + lnlen + v.getUint16(lho + 28, true);
     if (start + csize > cdOffset) throw new ZipError("truncated", "file data");
     const raw = bytes.subarray(start, start + csize);
     let data: Uint8Array;

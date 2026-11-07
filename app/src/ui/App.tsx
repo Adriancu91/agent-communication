@@ -6,6 +6,7 @@ import { useClosedByNewerVersion, useStorageInfo } from "./data";
 import { setLang, useI18n, type Key, type Lang } from "./i18n";
 import { IconContinuity, IconLauncher, IconMemory, IconProjects, IconSettings } from "./icons";
 import { isStandalone, useOfflineState } from "./offline";
+import { BackupCard } from "./backup";
 import { ContextPreview, EntryPage, MemoryHistory, MemoryTab, ProjectMemory } from "./memory";
 import { ProjectPage, ProjectsScreen, TrashScreen } from "./projects";
 import { ToastHost } from "./widgets";
@@ -178,10 +179,7 @@ function Settings(): JSX.Element {
         <p>{t("privacyText")}</p>
       </div>
       <StorageCard />
-      <div class="card notice">
-        <h2>{t("backupTitle")}</h2>
-        <p>{t("backupText")}</p>
-      </div>
+      <BackupCard />
       <div class="card">
         <h2>{t("offlineTitle")}</h2>
         <p data-offline={offline}>{offlineText}</p>
