@@ -1,7 +1,11 @@
 name: guard
-# Checks every push and PR: messages are immutable, logs are append-only,
-# agents do not touch protected paths, no secrets. Also runs daily over the whole history,
-# because pushes made with GITHUB_TOKEN by the agent workflows do not trigger this workflow.
+# Checks every push to main, every PR and (daily) the last 8 days of history:
+#   - who really pushed each commit (GitHub activity log, not the commit's author name),
+#   - messages/decisions/cost reports never modified or deleted, logs only appended,
+#   - protected paths changed only through a PR merged by Adrian,
+#   - nobody writes as someone else, no secrets.
+# It runs the guard copied from BEFORE the change, so a change cannot weaken the check that judges it.
+# On a violation in main it puts the system on pause (protocol/PAUSE); only Adrian removes it.
 on:
   push:
     branches: [main]
@@ -10,23 +14,129 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   guard:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Protocol tests
-        run: python3 -m unittest discover -s tests
-      - name: Validate messages
-        run: python3 tools/acp.py validate
-      - name: Check history and protected paths
+          persist-credentials: false
+      - name: Trusted copy of the guard (from before the change)
         env:
-          BASE: ${{ github.event.before || github.event.pull_request.base.sha || '0000000000000000000000000000000000000000' }}
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          ZERO=0000000000000000000000000000000000000000
+          case "$EVENT" in
+            push) BASE="${BEFORE:-$ZERO}"; MODE=push ;;
+            pull_request) BASE="$PR_BASE"; MODE=pr ;;
+            *) BASE=$(git rev-list -1 --before="8 days ago" HEAD || true); BASE="${BASE:-$ZERO}"; MODE=audit ;;
+          esac
+          REF="$BASE"; [ "$BASE" = "$ZERO" ] && REF=HEAD
+          mkdir -p "$RUNNER_TEMP/trusted"
+          git show "$REF:tools/acp.py" > "$RUNNER_TEMP/trusted/acp.py"
+          git show "$REF:protocol/config.json" > "$RUNNER_TEMP/trusted/config.json"
+          if ! grep -q -- "--activity-file" "$RUNNER_TEMP/trusted/acp.py"; then
+            # One-time bootstrap: the previous guard (v1) cannot read identities. Only acceptable for the PR
+            # that introduces guard v2 and for its merge by Adrian; logged as a warning.
+            echo "::warning::Gardianul anterior nu are verificarea identităților; folosesc versiunea nouă (bootstrap v2)."
+            cp tools/acp.py "$RUNNER_TEMP/trusted/acp.py"; cp protocol/config.json "$RUNNER_TEMP/trusted/config.json"
+          fi
+          { echo "BASE=$BASE"; echo "MODE=$MODE"; } >> "$GITHUB_ENV"
+      - name: Activity log (who pushed what)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          for i in 1 2 3 4; do
+            gh api --paginate --slurp "repos/$REPO/activity?ref=refs/heads/main&per_page=100" \
+              | python3 -c 'import json,sys;print(json.dumps([a for p in json.load(sys.stdin) for a in p]))' \
+              > "$RUNNER_TEMP/activity.json" || echo "[]" > "$RUNNER_TEMP/activity.json"
+            if [ "$MODE" != "push" ] || grep -q "$HEAD_SHA" "$RUNNER_TEMP/activity.json"; then break; fi
+            sleep 10
+          done
+      - name: Validate and guard (trusted copy)
+        env:
           ACTOR: ${{ github.actor }}
-        run: python3 tools/acp.py guard --base "$BASE" --head HEAD --actor "$ACTOR"
+        run: |
+          export ACP_ROOT="$GITHUB_WORKSPACE" ACP_CONFIG="$RUNNER_TEMP/trusted/config.json"
+          python3 "$RUNNER_TEMP/trusted/acp.py" validate
+          if [ "$MODE" = "audit" ]; then
+            python3 "$RUNNER_TEMP/trusted/acp.py" guard --base "$BASE" --head HEAD --mode audit --activity-file "$RUNNER_TEMP/activity.json"
+          else
+            python3 "$RUNNER_TEMP/trusted/acp.py" guard --base "$BASE" --head HEAD --mode "$MODE" --activity-file "$RUNNER_TEMP/activity.json" --actor "$ACTOR"
+          fi
+
+  tests:
+    # The code under review runs here, in its own job: no rights, no access to the guard's files.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Protocol and security tests
+        run: python3 -m unittest discover -s tests
+
+  wake-claudiu:
+    # Separate job: the PR code and tests never run with the right to start workflows.
+    needs: guard
+    if: github.event_name == 'push' && vars.CLAUDIU_ACTIONS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Start Claudiu only if he has messages waiting
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # the tool comes from the commit before the push (already judged), not from the pushed code
+          mkdir -p "$RUNNER_TEMP/trusted"
+          git show "$BEFORE:tools/acp.py" > "$RUNNER_TEMP/trusted/acp.py"
+          git show "$BEFORE:protocol/config.json" > "$RUNNER_TEMP/trusted/config.json"
+          export ACP_ROOT="$GITHUB_WORKSPACE" ACP_CONFIG="$RUNNER_TEMP/trusted/config.json"
+          n=$(python3 "$RUNNER_TEMP/trusted/acp.py" pending --agent claudiu | python3 -c 'import json,sys;d=json.load(sys.stdin);print(0 if d["paused"] else len(d["items"]))')
+          if [ "$n" != "0" ]; then gh workflow run claudiu.yml --ref main -R "$REPO"; else echo "Nimic de făcut."; fi
+
+  pause:
+    needs: guard
+    if: failure() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Put the agents on pause
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -f protocol/PAUSE ]; then echo "Pauza există deja."; exit 0; fi
+          printf 'Pauză pusă automat de gardian, %s.\nMotivul: %s\nDoar Adrian scoate pauza (ștergând acest fișier), după ce a verificat.\n' "$(date -u +%FT%TZ)" "$RUN_URL" > protocol/PAUSE
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add protocol/PAUSE
+          git commit -q -m "gardian: pauză automată după o încălcare"
+          for i in 1 2 3 4 5; do
+            git push -q origin HEAD:main && exit 0
+            sleep 5; git fetch -q origin main && git rebase -q origin/main || true
+          done
+          echo "::error::Pauza nu a putut fi urcată. Pune manual protocol/PAUSE."; exit 1

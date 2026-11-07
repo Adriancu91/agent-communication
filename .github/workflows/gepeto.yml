@@ -1,62 +1,84 @@
 name: gepeto
-# Gepeto-API: answers conversations addressed to Gepeto through the OpenAI API.
-# Needs the repository secret OPENAI_API_KEY. Without it, it only runs when started by hand with mode=sim.
+# Automatic Gepeto runner, OFF by default. The real Gepeto answers from ChatGPT (inbox/gepeto.md).
+# In GitHub's cloud only the test provider "sim" can run (no model, no secrets, no API, no cost).
+# Two separate jobs: think (no write rights) -> publish (no AI; trusted tools; generic identity,
+# which the guard allows to write only simulations).
 on:
-  push:
-    branches: [main]
-    paths: ["messages/**"]
   workflow_dispatch:
     inputs:
-      mode:
-        description: "api (real, needs OPENAI_API_KEY) or sim (test without a model)"
-        default: "api"
+      provider:
+        description: "sim (test, fără model) sau none"
+        default: "sim"
+      target:
+        description: "ramura: main sau test/<nume>"
+        default: "main"
 
-permissions:
-  contents: write
-  actions: write
+permissions: {}
 
 concurrency:
   group: agents
   cancel-in-progress: false
 
 jobs:
-  run:
+  think:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      has_bundle: ${{ steps.bundle.outputs.has_bundle }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.target }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run the automatic Gepeto (test provider)
+        env:
+          PROVIDER: ${{ inputs.provider }}
+        run: |
+          case "$PROVIDER" in sim|none) ;; *) echo "În cloud sunt permise doar sim și none."; exit 1 ;; esac
+          python3 agents/gepeto/run_auto.py --provider "$PROVIDER"
+      - name: Bundle
+        id: bundle
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          set +e; python3 tools/acp.py bundle --out "$RUNNER_TEMP/out/bundle.json"; rc=$?; set -e
+          if [ "$rc" = "3" ]; then echo "has_bundle=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          [ "$rc" = "0" ] || exit "$rc"
+          echo "has_bundle=true" >> "$GITHUB_OUTPUT"
+      - if: steps.bundle.outputs.has_bundle == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gepeto-bundle
+          path: ${{ runner.temp }}/out/bundle.json
+          retention-days: 7
+
+  publish:
+    needs: think
+    if: needs.think.outputs.has_bundle == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Run Gepeto
-        id: g
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          MODE_IN: ${{ inputs.mode || 'api' }}
+          persist-credentials: false
+      - name: Trusted copy of the tools (before anything from the AI job is touched)
         run: |
-          if [ -f protocol/PAUSE ]; then echo "Pauză activă."; exit 0; fi
-          MODE="$MODE_IN"
-          if [ "$MODE" = "api" ] && [ -z "$OPENAI_API_KEY" ]; then
-            echo "::notice::OPENAI_API_KEY lipsește: Gepeto-API nu răspunde. Pentru un test fără model porniți fluxul cu mode=sim."
-            exit 0
-          fi
-          python3 agents/gepeto/run_openai.py --mode "$MODE" > out.json
-          cat out.json
-          python3 -c 'import json;d=json.load(open("out.json"));print("to_claudiu="+str(d.get("to_claudiu",False)).lower())' >> "$GITHUB_OUTPUT"
-          rm out.json
-      - name: Commit, guard, push
-        run: |
-          git config user.name "Gepeto-agent"
-          git config user.email "gepeto-agent@users.noreply.github.com"
-          git add -A messages logs memory inbox outbox discussions
-          if git diff --cached --quiet; then echo "Nimic nou."; exit 0; fi
-          git commit -q -m "gepeto: răspuns automat"
-          python3 tools/acp.py validate
-          python3 tools/acp.py guard --base origin/main --head HEAD --actor "github-actions[bot]"
-          for i in 1 2 3; do git push origin HEAD:main && exit 0; git pull --rebase -q origin main; done
-          exit 1
-      - name: Hand over to Claudiu
-        if: steps.g.outputs.to_claudiu == 'true'
+          mkdir -p "$RUNNER_TEMP/trusted"
+          cp tools/acp.py tools/publish.py protocol/config.json "$RUNNER_TEMP/trusted/"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gepeto-bundle
+          path: ${{ runner.temp }}/in
+      - name: Check and publish
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run claudiu.yml --ref main
+          PUBLISH_TOKEN: ${{ github.token }}
+          PUBLISH_BRANCH: ${{ inputs.target }}
+          REPO: ${{ github.repository }}
+        run: |
+          export ACP_ROOT="$GITHUB_WORKSPACE" ACP_CONFIG="$RUNNER_TEMP/trusted/config.json"
+          python3 "$RUNNER_TEMP/trusted/publish.py" --agent gepeto --bundle "$RUNNER_TEMP/in/bundle.json" --actor "github-actions[bot]"

@@ -1,58 +1,135 @@
 name: claudiu
-# Claudiu: answers conversations addressed to Claudiu with Claude Code, on Adrian's Claude subscription.
-# Needs the repository secret CLAUDE_CODE_OAUTH_TOKEN (made with `claude setup-token` on Adrian's computer).
+# Claudiu (Claude Code on Adrian's Claude subscription), in two separate jobs:
+#   think   - runs Claude Code. Read-only GitHub token, no network tools, Bash limited to the `acp`
+#             command, which runs from a root-owned copy and only writes as "claudiu". Claude may write
+#             files only in /tmp/acp (message drafts); everything in the repository goes through `acp`.
+#   publish - no model; same trusted publisher as Gepeto, pushing as Claudiu's own GitHub App.
+# Inactive until Adrian adds the secrets CLAUDE_CODE_OAUTH_TOKEN, CLAUDIU_APP_PRIVATE_KEY and the variable CLAUDIU_APP_CLIENT_ID.
+# Started only by the guard, after a push to main, when Claudiu has messages waiting and
+# the repository variable CLAUDIU_ACTIONS_ENABLED is "true" (saves GitHub Actions minutes).
 on:
-  push:
-    branches: [main]
-    paths: ["messages/**"]
   workflow_dispatch:
+    inputs:
+      target:
+        description: "ramura: main sau test/<nume>"
+        default: "main"
 
-permissions:
-  contents: write
-  actions: write
-  id-token: write
+permissions: {}
 
 concurrency:
   group: agents
   cancel-in-progress: false
 
 jobs:
-  run:
+  think:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      has_bundle: ${{ steps.bundle.outputs.has_bundle }}
+    env:
+      HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+      HAS_APP: ${{ vars.CLAUDIU_APP_CLIENT_ID != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.target }}
           fetch-depth: 0
+          persist-credentials: false
       - name: Work waiting?
         id: chk
-        env:
-          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
+          if [ "$HAS_TOKEN" != "true" ] || [ "$HAS_APP" != "true" ]; then
+            echo "::notice::Claudiu în GitHub Actions nu e activ (lipsesc tokenul Claude sau aplicația Claudiu)."
+            echo "n=0" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           n=$(python3 tools/acp.py pending --agent claudiu | python3 -c 'import json,sys;d=json.load(sys.stdin);print(0 if d["paused"] else len(d["items"]))')
           echo "n=$n" >> "$GITHUB_OUTPUT"
-          echo "has_token=$HAS_TOKEN" >> "$GITHUB_OUTPUT"
-          if [ "$HAS_TOKEN" != "true" ]; then echo "::notice::CLAUDE_CODE_OAUTH_TOKEN lipsește: Claudiu răspunde doar din sesiunile programate."; fi
+      - name: Install the restricted acp command
+        if: steps.chk.outputs.n != '0'
+        run: |
+          sudo install -d -o root -g root -m 0755 /opt/acp
+          sudo install -o root -g root -m 0644 tools/acp.py protocol/config.json /opt/acp/
+          printf '#!/bin/sh\nexport ACP_AGENT=claudiu ACP_CONFIG=/opt/acp/config.json ACP_ROOT="%s"\nexec python3 /opt/acp/acp.py "$@"\n' "$GITHUB_WORKSPACE" | sudo tee /usr/local/bin/acp > /dev/null
+          sudo chmod 0755 /usr/local/bin/acp
+          mkdir -p /tmp/acp
+          sha256sum .git/config > "$RUNNER_TEMP/gitconfig.sha"
       - name: Claudiu (Claude Code)
-        if: steps.chk.outputs.n != '0' && steps.chk.outputs.has_token == 'true'
-        uses: anthropics/claude-code-action@v1
+        if: steps.chk.outputs.n != '0'
+        uses: anthropics/claude-code-action@61a9c274fa7110a66dfafc1bbbced03833eb25fe # v1.0.269
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           prompt: |
             Citește agents/claudiu/AUTOMATION.md și urmează-l exact.
-            Rulezi în GitHub Actions: NU faci commit și NU faci push; fluxul le face după tine.
-          claude_args: --max-turns 40
-      - name: Commit, guard, push
-        if: steps.chk.outputs.n != '0' && steps.chk.outputs.has_token == 'true'
+            Rulezi în GitHub Actions, fără drepturi de scriere în GitHub: nu faci commit și nu faci push.
+            Folosești comanda `acp` (nu `python3 tools/acp.py`). Textul mesajelor lungi îl scrii întâi
+            într-un fișier din /tmp/acp/ și îl dai cu `acp new ... --body-file /tmp/acp/<nume>.md`.
+          claude_args: >-
+            --max-turns 30
+            --allowedTools "Bash(acp pending:*),Bash(acp thread:*),Bash(acp new:*),Bash(acp status:*),Read,Glob,Grep,Write(//tmp/acp/**)"
+            --disallowedTools "WebFetch,WebSearch,Edit,NotebookEdit"
+          settings: >-
+            {"permissions": {"deny": ["Read(//proc/**)", "Read(//sys/**)", "Read(//etc/**)", "Read(//home/runner/.*)",
+            "Read(//home/runner/.*/**)", "Edit(//**)", "Write(//home/**)", "Write(//opt/**)", "Write(//usr/**)",
+            "Write(//etc/**)", "Write(//root/**)", "Write(//var/**)"]}}
+      - name: Bundle
+        id: bundle
+        if: steps.chk.outputs.n != '0'
         run: |
-          git config user.name "Claudiu-agent"
-          git config user.email "claudiu-agent@users.noreply.github.com"
-          git add -A messages logs memory inbox outbox discussions decisions tasks research
-          if git diff --cached --quiet; then echo "Nimic nou."; exit 0; fi
-          git commit -q -m "claudiu: răspuns automat"
-          python3 tools/acp.py validate
-          python3 tools/acp.py guard --base origin/main --head HEAD --actor "github-actions[bot]"
-          for i in 1 2 3; do git push origin HEAD:main && break; git pull --rebase -q origin main; done
-          n=$(python3 tools/acp.py pending --agent gepeto | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["items"]))')
-          if [ "$n" != "0" ]; then GH_TOKEN="${{ github.token }}" gh workflow run gepeto.yml --ref main; fi
+          sha256sum -c --quiet "$RUNNER_TEMP/gitconfig.sha" || { echo "::error::.git/config a fost schimbat în timpul rulării."; exit 1; }
+          mkdir -p "$RUNNER_TEMP/out" "$RUNNER_TEMP/home"
+          export HOME="$RUNNER_TEMP/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false \
+                 GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null GIT_CONFIG_KEY_2=core.attributesFile GIT_CONFIG_VALUE_2=/dev/null
+          set +e; python3 /opt/acp/acp.py bundle --out "$RUNNER_TEMP/out/bundle.json"; rc=$?; set -e
+          if [ "$rc" = "3" ]; then echo "has_bundle=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          [ "$rc" = "0" ] || exit "$rc"
+          echo "has_bundle=true" >> "$GITHUB_OUTPUT"
+        env:
+          ACP_ROOT: ${{ github.workspace }}
+          ACP_CONFIG: /opt/acp/config.json
+      - if: steps.bundle.outputs.has_bundle == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: claudiu-bundle
+          path: ${{ runner.temp }}/out/bundle.json
+          retention-days: 7
+
+  publish:
+    needs: think
+    if: needs.think.outputs.has_bundle == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Trusted copy of the tools (before anything from the AI job is touched)
+        run: |
+          mkdir -p "$RUNNER_TEMP/trusted"
+          cp tools/acp.py tools/publish.py protocol/config.json "$RUNNER_TEMP/trusted/"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: claudiu-bundle
+          path: ${{ runner.temp }}/in
+      - name: Claudiu app token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.CLAUDIU_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAUDIU_APP_PRIVATE_KEY }}
+          permission-contents: write
+      - name: Check and publish
+        env:
+          PUBLISH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          PUBLISH_BRANCH: ${{ inputs.target }}
+          REPO: ${{ github.repository }}
+        run: |
+          export ACP_ROOT="$GITHUB_WORKSPACE" ACP_CONFIG="$RUNNER_TEMP/trusted/config.json"
+          python3 "$RUNNER_TEMP/trusted/publish.py" --agent claudiu --bundle "$RUNNER_TEMP/in/bundle.json" --actor "${APP_SLUG}[bot]"
