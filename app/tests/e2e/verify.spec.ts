@@ -71,7 +71,10 @@ test.describe("AIW-01 verification", () => {
     const inv = await inventory(page);
     console.log("SALVAT PE DISPOZITIV:", JSON.stringify(inv));
     // preferences only (language, order, notices) in localStorage; the project itself is not there
-    for (const k of inv.localStorage) expect(["aiw.lang", "aiw.sort", "aiw.persistAsked", "aiw.iosNotice"]).toContain(k);
+    // AIW-03: the integrity checkpoint (only a sequence number and a fingerprint) and the last opened project id
+    for (const k of inv.localStorage) expect(["aiw.lang", "aiw.sort", "aiw.persistAsked", "aiw.iosNotice", "aiw.checkpoint:aiw", "aiw.lastProject"]).toContain(k);
+    const cp = await page.evaluate(() => localStorage.getItem("aiw.checkpoint:aiw"));
+    if (cp) expect(Object.keys(JSON.parse(cp)).sort()).toEqual(["hash", "seq"]);
     const ls = await page.evaluate(() => JSON.stringify({ ...localStorage }));
     expect(ls).not.toContain("verificat");
     expect(inv.sessionStorage).toEqual([]);

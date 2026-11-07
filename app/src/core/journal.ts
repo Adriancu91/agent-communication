@@ -3,13 +3,19 @@
 // separately, so it can be erased (definitive delete) without breaking the chain.
 
 export type EventType = "project.created" | "project.renamed" | "project.updated" | "project.pinned"
-  | "project.trashed" | "project.restored" | "project.purged";
+  | "project.trashed" | "project.restored" | "project.purged"
+  // AIW-03: memory entries and the links between them
+  | "memory.created" | "memory.edited" | "memory.important" | "memory.archived" | "memory.restored"
+  | "memory.confirmed" | "memory.rejected" | "memory.status" | "memory.purged"
+  | "link.created" | "link.removed";
 
 export interface JournalEvent {
   seq: number;
   ts: string;
   type: EventType;
   projectId: string;
+  /** The memory entry or link the event is about (AIW-03). Absent on AIW-02 project events. */
+  entityId?: string;
   dataHash: string;
   data: Record<string, unknown> | null; // null after a definitive delete
   prev: string;
@@ -31,13 +37,21 @@ export async function sha256(text: string): Promise<string> {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** The fingerprinted header. `entityId` is included only when present, so AIW-02 events keep their fingerprint. */
+function header(e: Pick<JournalEvent, "seq" | "ts" | "type" | "projectId" | "entityId" | "dataHash" | "prev">) {
+  const h: Record<string, unknown> = { seq: e.seq, ts: e.ts, type: e.type, projectId: e.projectId, dataHash: e.dataHash, prev: e.prev };
+  if (e.entityId !== undefined) h.entityId = e.entityId;
+  return canonical(h);
+}
+
 export async function makeEvent(prev: { seq: number; hash: string } | null, ts: string, type: EventType,
-  projectId: string, data: Record<string, unknown>): Promise<JournalEvent> {
+  projectId: string, data: Record<string, unknown>, entityId?: string): Promise<JournalEvent> {
   const seq = (prev?.seq ?? 0) + 1;
   const prevHash = prev?.hash ?? GENESIS;
   const dataHash = await sha256(canonical(data));
-  const hash = await sha256(canonical({ seq, ts, type, projectId, dataHash, prev: prevHash }));
-  return { seq, ts, type, projectId, dataHash, data, prev: prevHash, hash };
+  const base = { seq, ts, type, projectId, dataHash, prev: prevHash, ...(entityId !== undefined ? { entityId } : {}) };
+  const hash = await sha256(header(base));
+  return { ...base, data, hash };
 }
 
 export interface ChainReport {
@@ -54,7 +68,7 @@ export async function verifyChain(events: JournalEvent[]): Promise<ChainReport> 
   for (const [i, e] of events.entries()) {
     if (e.seq !== i + 1) return { ok: false, events: events.length, erased, problem: `lipsește evenimentul ${i + 1}` };
     if (e.prev !== prev) return { ok: false, events: events.length, erased, problem: `legătura ruptă la ${e.seq}` };
-    const h = await sha256(canonical({ seq: e.seq, ts: e.ts, type: e.type, projectId: e.projectId, dataHash: e.dataHash, prev: e.prev }));
+    const h = await sha256(header(e));
     if (h !== e.hash) return { ok: false, events: events.length, erased, problem: `evenimentul ${e.seq} a fost modificat` };
     if (e.data === null) erased++;
     else if ((await sha256(canonical(e.data))) !== e.dataHash) {

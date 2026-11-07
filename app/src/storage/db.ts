@@ -26,15 +26,31 @@ export function toStorageError(e: unknown): StorageError {
  * Migrations, in order. Version N creates what version N needs; never edit an old step, add a new one.
  * Later stages (memory, conversations, files) add their stores here.
  */
-const MIGRATIONS: ((db: IDBDatabase, tx: IDBTransaction) => void)[] = [
+export type Migration = (db: IDBDatabase, tx: IDBTransaction) => void;
+
+export const MIGRATIONS: Migration[] = [
+  // 1 — AIW-02: projects, the journal, settings
   (db) => {
     db.createObjectStore("projects", { keyPath: "id" });
     const ev = db.createObjectStore("events", { keyPath: "seq" });
     ev.createIndex("projectId", "projectId");
     db.createObjectStore("meta", { keyPath: "key" });
   },
+  // 2 — AIW-03: project memory and the links between memory entries. Adds only; touches no existing data.
+  (db, tx) => {
+    const memory = db.createObjectStore("memory", { keyPath: "id" });
+    memory.createIndex("projectId", "projectId");
+    const links = db.createObjectStore("links", { keyPath: "id" });
+    links.createIndex("projectId", "projectId");
+    links.createIndex("from", "from");
+    links.createIndex("to", "to");
+    tx.objectStore("events").createIndex("entityId", "entityId");
+  },
 ];
 export const DB_VERSION = MIGRATIONS.length;
+
+/** Stores whose records belong to one project: removed with the project on a definitive delete. */
+export const PROJECT_SCOPED_STORES = ["memory", "links"] as const;
 
 export function req<T>(r: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -57,19 +73,28 @@ export function whenClosedByNewerVersion(cb: () => void): void {
   onClosed = cb;
 }
 
-export function openDb(name = "aiw"): Promise<IDBDatabase> {
+/**
+ * Opens (and if needed upgrades) the database. The upgrade runs in one transaction: if any step
+ * fails, the browser keeps the previous version and its data untouched.
+ */
+export function openDb(name = "aiw", migrations: Migration[] = MIGRATIONS): Promise<IDBDatabase> {
   if (typeof indexedDB === "undefined") return Promise.reject(new StorageError("unavailable", "no IndexedDB"));
   return new Promise((resolve, reject) => {
     let r: IDBOpenDBRequest;
     try {
-      r = indexedDB.open(name, DB_VERSION);
+      r = indexedDB.open(name, migrations.length);
     } catch (e) {
       reject(new StorageError("unavailable", String(e)));
       return;
     }
     r.onupgradeneeded = (ev) => {
       const tx = r.transaction!;
-      for (let v = ev.oldVersion; v < DB_VERSION; v++) MIGRATIONS[v](r.result, tx);
+      try {
+        for (let v = ev.oldVersion; v < migrations.length; v++) migrations[v](r.result, tx);
+      } catch (e) {
+        tx.abort(); // nothing of the upgrade is kept; the database stays at its previous version
+        reject(new StorageError("unknown", "upgrade failed: " + String(e).slice(0, 80)));
+      }
     };
     r.onblocked = () => reject(new StorageError("blocked"));
     r.onerror = () => reject(toStorageError(r.error));
