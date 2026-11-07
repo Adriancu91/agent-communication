@@ -50,7 +50,8 @@ if (typeof globalThis.localStorage === "undefined") {
 describe("data and migration", () => {
   it("a fresh database has the memory schema and verifies", async () => {
     const db = await openDb(dbName);
-    expect([...db.objectStoreNames].sort()).toEqual(["events", "links", "memory", "meta", "projects"]);
+    // AIW-05 added "sessions" and "exchanges" (migration 3); the AIW-03 stores are unchanged
+    expect([...db.objectStoreNames].sort()).toEqual(["events", "exchanges", "links", "memory", "meta", "projects", "sessions"]);
     expect(db.version).toBe(MIGRATIONS.length);
     expect([...db.transaction("events").objectStore("events").indexNames].sort()).toEqual(["entityId", "projectId"]);
     db.close();
@@ -73,7 +74,7 @@ describe("data and migration", () => {
 
     const after = new ProjectStore(new JournaledStore(dbName, tick));
     const db = await openDb(dbName);
-    expect(db.version).toBe(2);
+    expect(db.version).toBe(MIGRATIONS.length); // AIW-03: 2; AIW-05: 3 (the AIW-02 database goes through every step)
     db.close();
     expect(await after.list()).toEqual(beforeProjects); // names, descriptions, pins, dates, trash, name history
     expect(await after.journal()).toEqual(beforeEvents);

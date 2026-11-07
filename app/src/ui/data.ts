@@ -2,6 +2,7 @@
 import { useEffect, useState } from "preact/hooks";
 import type { EntryVersion, MemoryEntry, MemoryLink, Project } from "../core";
 import { LinkError, MemoryStore, MemoryValidationError } from "../memory";
+import { SessionError, SessionStore } from "../continuity";
 import { ProjectStore, ValidationError } from "../projects";
 import { JournaledStore, persistState, requestPersist, StorageError, usage, whenClosedByNewerVersion, type PersistState } from "../storage";
 import type { Key } from "./i18n";
@@ -10,6 +11,7 @@ import type { Key } from "./i18n";
 export const base = new JournaledStore();
 export const store = new ProjectStore(base);
 export const memoryStore = new MemoryStore(base);
+export const sessionStore = new SessionStore(base);
 
 export interface MemoryState {
   entries: MemoryEntry[];
@@ -104,6 +106,7 @@ export function useClosedByNewerVersion(): boolean {
 /** The text key that explains an error to the user. */
 export function errorKey(e: unknown): Key {
   if (e instanceof LinkError) return `le_${e.reason}` as Key;
+  if (e instanceof SessionError) return `se_${e.reason}` as Key;
   if (e instanceof MemoryValidationError) {
     if (e.field === "title") return e.reason === "empty" ? "errTitleEmpty" : e.reason === "tooLong" ? "errTitleLong" : "errChars";
     if (e.field === "body") return e.reason === "tooLong" ? "errBodyLong" : "errChars";

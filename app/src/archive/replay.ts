@@ -5,7 +5,7 @@
 // A file that passes was produced by the app's own operations, or is indistinguishable from one.
 import {
   charCount, checkDescription, checkEntry, checkName, cleanBody, cleanDescription, cleanName, cleanTitle, isCategory, isEntryId,
-  isLinkType, isOfficial, REASON_MAX, SOURCE_MAX,
+  isLinkType, isOfficial, REASON_MAX, SOURCE_MAX, UNSAFE_CHARS, isSessionId, isExchangeId, isProvider, cleanText, EXCHANGE_MAX, TASK_MAX, PROVIDER_NAME_MAX,
   type EventType, type MemoryEntry, type MemoryLink, type Project,
 } from "../core";
 import { ArchiveError, type ArchivedEvent, type ProjectFile } from "./archive";
@@ -14,7 +14,7 @@ const LINK_ID = /^L-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 const PROJECT_ID = /^P-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
-const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F‪-‮⁦-⁩]/;
+const CONTROL = UNSAFE_CHARS;
 
 const bad = (e: ArchivedEvent, what: string): never => {
   throw new ArchiveError("history", `event ${e.seq} ${what}`);
@@ -31,7 +31,8 @@ const validTitle = (v: unknown) => isStr(v) && cleanTitle(v) === v;
 const validBody = (v: unknown) => isStr(v) && cleanBody(v) === v;
 
 /** Events about the project itself have no entity; memory and link events always have one. */
-const ENTITY: Partial<Record<EventType, "entry" | "link">> = {
+const ENTITY: Partial<Record<EventType, "entry" | "link" | "session" | "exchange">> = {
+  "session.created": "session", "session.closed": "session", "session.reopened": "session", "session.exchange": "exchange",
   "memory.created": "entry", "memory.edited": "entry", "memory.important": "entry", "memory.archived": "entry",
   "memory.restored": "entry", "memory.confirmed": "entry", "memory.rejected": "entry", "memory.status": "entry",
   "memory.purged": "entry", "link.created": "link", "link.removed": "link",
@@ -43,6 +44,8 @@ export function checkEventData(e: ArchivedEvent): void {
   const kind = ENTITY[e.type];
   if (kind === "entry" && !isEntryId(e.entityId)) bad(e, "entity");
   if (kind === "link" && !(isStr(e.entityId) && LINK_ID.test(e.entityId))) bad(e, "entity");
+  if (kind === "session" && !isSessionId(e.entityId)) bad(e, "entity");
+  if (kind === "exchange" && !isExchangeId(e.entityId)) bad(e, "entity");
   if (!kind && e.type.startsWith("project.") && e.entityId !== undefined) bad(e, "entity");
   switch (e.type) {
     case "project.created":
@@ -63,9 +66,28 @@ export function checkEventData(e: ArchivedEvent): void {
       break;
     case "project.trashed": case "project.restored": case "project.purged":
     case "memory.archived": case "memory.restored": case "memory.confirmed": case "memory.rejected": case "memory.purged":
-    case "link.removed":
+    case "link.removed": case "session.closed": case "session.reopened":
       needKeys(e, d, []);
       break;
+    case "session.created":
+      needKeys(e, d, ["provider", "providerName", "task", "continues"]);
+      if (!isProvider(d.provider) || !isStr(d.providerName) || charCount(d.providerName) > PROVIDER_NAME_MAX || CONTROL.test(d.providerName)) bad(e, "data");
+      if ((d.provider === "other") !== (d.providerName !== "") || !isStr(d.task) || cleanText(d.task) !== d.task || charCount(d.task) > TASK_MAX) bad(e, "data");
+      if (d.continues !== null && !isSessionId(d.continues)) bad(e, "data");
+      break;
+    case "session.exchange": {
+      needKeys(e, d, ["session", "kind", "text", "pack", "proposals"]);
+      if (!isSessionId(d.session) || !["sent", "reply", "note"].includes(d.kind as string)) bad(e, "data");
+      if (!isStr(d.text) || cleanText(d.text) !== d.text || charCount(d.text) > EXCHANGE_MAX || (d.kind === "sent") !== (d.text === "")) bad(e, "data");
+      if (!Array.isArray(d.proposals) || !d.proposals.every(isEntryId) || (d.kind !== "reply" && d.proposals.length > 0)) bad(e, "data");
+      const pk = d.pack as Record<string, unknown> | null;
+      if (d.kind === "sent") {
+        if (!pk || typeof pk !== "object" || keys(pk) !== "chars,refs,sha256" || !isStr(pk.sha256) || !HEX64.test(pk.sha256) || typeof pk.chars !== "number") bad(e, "data");
+        const refs = pk!.refs as Record<string, unknown>;
+        if (!refs || typeof refs !== "object" || Array.isArray(refs) || Object.entries(refs).some(([k, v]) => !/^[A-Z]\d{1,6}$/.test(k) || !isEntryId(v))) bad(e, "data");
+      } else if (pk !== null) bad(e, "data");
+      break;
+    }
     case "project.imported": {
       // what an earlier import recorded; "previous" lists the imports before it
       const k = keys(d);
@@ -130,6 +152,8 @@ export function replayProject(pf: ProjectFile): void {
   const purged = new Set<string>();
   const links = new Map<string, { from: string; to: string; type: string; reason: string }>();
   const removedLinks = new Set<string>();
+  const sessions = new Map<string, { provider: string; providerName: string; task: string; continues: string | null; status: string }>();
+  const exchanges = new Map<string, Record<string, unknown>>();
   pf.events.forEach((e, i) => {
     if (e.type === "project.imported" && i !== 0) inconsistent("import record inside the history");
     const d = e.data as Record<string, unknown>;
@@ -161,12 +185,27 @@ export function replayProject(pf: ProjectFile): void {
         links.delete(id);
         removedLinks.add(id);
         break;
+      case "session.created":
+        if (sessions.has(id) || d.continues === id) inconsistent(`session ${id}`);
+        sessions.set(id, { provider: d.provider as string, providerName: d.providerName as string, task: d.task as string, continues: d.continues as string | null, status: "open" });
+        break;
+      case "session.closed": case "session.reopened": {
+        const x = sessions.get(id);
+        if (!x) inconsistent(`event for an unknown session ${id}`);
+        x!.status = e.type === "session.closed" ? "closed" : "open";
+        break;
+      }
+      case "session.exchange":
+        if (exchanges.has(id) || !sessions.has(d.session as string)) inconsistent(`exchange ${id}`);
+        if (sessions.get(d.session as string)!.status === "closed") inconsistent(`exchange in a closed session ${id}`);
+        exchanges.set(id, d);
+        break;
       default: {
         if (!e.type.startsWith("memory.")) break;
         if (!cur) inconsistent(`event for an unknown entry ${id}`);
         const c = cur!;
         if (e.type === "memory.edited") {
-          if (d.version !== c.version + 1) inconsistent(`version order ${id}`);
+          if (d.version !== c.version + 1 || c.confirmation === "rejected") inconsistent(`version order ${id}`);
           Object.assign(c, { title: d.title, body: d.body, version: d.version });
         } else if (e.type === "memory.important") c.important = d.important as boolean;
         else if (e.type === "memory.archived") c.archived = true;
@@ -201,6 +240,16 @@ export function replayProject(pf: ProjectFile): void {
     if (!f || f.from !== l.from || f.to !== l.to || f.type !== l.type || f.reason !== l.reason) inconsistent(`link ${l.id}`);
   }
   checkLinkRules(pf.memory, pf.links);
+  if (sessions.size !== pf.sessions.length || exchanges.size !== pf.exchanges.length) inconsistent("sessions");
+  for (const x of pf.sessions) {
+    const f = sessions.get(x.id);
+    if (!f || f.provider !== x.provider || f.providerName !== x.providerName || f.task !== x.task || f.continues !== x.continues || f.status !== x.status) inconsistent(`session ${x.id}`);
+  }
+  for (const x of pf.exchanges) {
+    const f = exchanges.get(x.id);
+    if (!f || f.session !== x.sessionId || f.kind !== x.kind || f.text !== x.text || JSON.stringify(f.proposals) !== JSON.stringify(x.proposals)
+      || JSON.stringify(f.pack) !== JSON.stringify(x.pack)) inconsistent(`exchange ${x.id}`);
+  }
 }
 
 /**

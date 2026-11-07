@@ -2,6 +2,14 @@
 
 Nicio versiune nu e publicată. Fiecare etapă e un PR separat, neîmbinat până la aprobarea lui Adrian.
 
+## AIW-05 — Continuitate AI (PR separat, ciornă)
+- **Lansatorul** devine fluxul de lucru cu AI: proiect → asistent (ChatGPT, Claude, Gemini, alt AI) → sarcină → pachet de continuitate → copiere / descărcare → deschiderea site-ului AI într-o filă nouă.
+- **Pachetul de continuitate:** memoria oficială pe secțiuni, cu referințe scurte (D1, P2), instrucțiuni pentru AI, sarcina, opțional ultimele răspunsuri; limită de mărime; fără propuneri neconfirmate și fără contradicții.
+- **Sesiuni** (tabul Continuitate): pachetul dat, răspunsurile aduse înapoi, note, închidere / redeschidere, continuare cu alt AI.
+- **Reintroducerea răspunsului:** propunerile sunt găsite (bloc standard sau secțiuni), comparate cu memoria și confirmate de tine: acceptă / respinge / de decis, cu editare; relațiile (înlocuiește / rezolvă) se aplică doar la acceptare.
+- **Exportul** include și sesiunile (formatul arhivei, versiunea 2; versiunea 1 se citește în continuare).
+- **Tehnic:** migrarea 3 (doar adăugare), fără API, fără chei, fără conexiuni noi.
+
 ## AIW-04 — Export și import (PR separat, ciornă)
 - **Export** al unui proiect (din pagina lui sau din meniul ⋯) sau al tuturor proiectelor (Setări), într-o arhivă `.zip`: memoria completă, legăturile, istoricul și versiunile.
 - **Import** din Setări, cu verificarea completă a arhivei înainte de orice scriere și cu previzualizare.

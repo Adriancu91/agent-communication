@@ -46,11 +46,19 @@ export const MIGRATIONS: Migration[] = [
     links.createIndex("to", "to");
     tx.objectStore("events").createIndex("entityId", "entityId");
   },
+  // 3 — AIW-05: AI work sessions and their steps (package sent, AI reply, note). Adds only.
+  (db) => {
+    const sessions = db.createObjectStore("sessions", { keyPath: "id" });
+    sessions.createIndex("projectId", "projectId");
+    const exchanges = db.createObjectStore("exchanges", { keyPath: "id" });
+    exchanges.createIndex("projectId", "projectId");
+    exchanges.createIndex("sessionId", "sessionId");
+  },
 ];
 export const DB_VERSION = MIGRATIONS.length;
 
 /** Stores whose records belong to one project: removed with the project on a definitive delete. */
-export const PROJECT_SCOPED_STORES = ["memory", "links"] as const;
+export const PROJECT_SCOPED_STORES = ["memory", "links", "sessions", "exchanges"] as const;
 
 export function req<T>(r: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
