@@ -7,10 +7,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const app = resolve(new URL("..", import.meta.url).pathname);
-// AIW-02 as in PR #5. The tag "aiw-02-baseline" (if present) keeps it reachable after a squash merge;
-// otherwise the commit itself, reachable as long as the AIW-02 / AIW-03 history is kept.
+// AIW-02 as in PR #5: the fixed commit first (a tag could be moved); the tag "aiw-02-baseline" only
+// if the commit is no longer reachable (for example after a squash merge), and only if it points to it.
 const has = (ref) => { try { execFileSync("git", ["-C", app, "rev-parse", "--verify", "--quiet", ref + "^{commit}"]); return true; } catch { return false; } };
-const COMMIT = process.env.AIW02_COMMIT ?? (has("aiw-02-baseline") ? "aiw-02-baseline" : "fe039c0");
+const sha = (ref) => execFileSync("git", ["-C", app, "rev-parse", ref + "^{commit}"], { encoding: "utf8" }).trim();
+const COMMIT = process.env.AIW02_COMMIT
+  ?? (has("fe039c0") ? "fe039c0" : has("aiw-02-baseline") && sha("aiw-02-baseline").startsWith("fe039c0") ? "aiw-02-baseline" : "fe039c0");
 const out = join(app, ".baseline", "aiw02-dist");
 const repo = execFileSync("git", ["-C", app, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
 const wt = mkdtempSync(join(tmpdir(), "aiw02-"));

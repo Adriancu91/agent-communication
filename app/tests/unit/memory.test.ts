@@ -574,3 +574,47 @@ describe("review findings (independent review, 7 Nov 2026)", () => {
     expect((await memory.edit(a.id, { title: "x", body: "" })).title).toBe("x");
   });
 });
+
+describe("second review findings (7 Nov 2026)", () => {
+  it("a new ordinary link never brings back a status coming from an archived entry", async () => {
+    const p = await projects.create("P");
+    const x = await memory.create(p.id, { category: "issue", title: "X" });
+    const f = await memory.create(p.id, { category: "fact", title: "F" });
+    const g = await memory.create(p.id, { category: "goal", title: "G" });
+    await memory.link(f.id, x.id, "resolves");
+    await memory.archive(f.id);
+    expect((await memory.get(x.id))!.status).toBe("active");
+    await memory.link(g.id, x.id, "related_to");
+    expect((await memory.get(x.id))!.status).toBe("active");
+    const a = await memory.create(p.id, { category: "decision", title: "A" });
+    const { entry: b } = await memory.replaceDecision(a.id, { title: "B" }, "motiv");
+    await memory.archive(b.id);
+    const c = await memory.create(p.id, { category: "decision", title: "C" });
+    await memory.link(c.id, a.id, "derived_from");
+    expect((await memory.get(a.id))!.status).toBe("active");
+    expect(await memory.verify(p.id)).toMatchObject({ ok: true, inconsistencies: [] });
+  });
+
+  it("permanent delete also erases texts of links removed earlier", async () => {
+    const p = await projects.create("P");
+    const a = await memory.create(p.id, { category: "fact", title: "A" });
+    const b = await memory.create(p.id, { category: "fact", title: "B" });
+    const l = await memory.link(a.id, b.id, "related_to", "SECRET despre B");
+    await memory.unlink(l.id);
+    await memory.archive(b.id);
+    await memory.purge(b.id);
+    expect(JSON.stringify(await base.journal())).not.toContain("SECRET despre B");
+    expect(await memory.verify(p.id)).toMatchObject({ ok: true });
+  });
+
+  it("a decision is replaced only once: restoring an earlier replacement is refused", async () => {
+    const p = await projects.create("P");
+    const b = await memory.create(p.id, { category: "decision", title: "B" });
+    const { entry: a } = await memory.replaceDecision(b.id, { title: "A" }, "1");
+    await memory.archive(a.id);
+    await memory.replaceDecision(b.id, { title: "C" }, "2");
+    await expect(memory.restore(a.id)).rejects.toMatchObject({ reason: "alreadyReplaced" });
+    expect((await memory.get(a.id))!.archived).toBe(true);
+    expect(await memory.verify(p.id)).toMatchObject({ ok: true, inconsistencies: [] });
+  });
+});

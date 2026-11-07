@@ -140,3 +140,14 @@ Raportul anterior („98 de teste”) e confirmat: 26 + 72.
 - Versiunea AIW-02 (nepublicată) are încă defectul; testul de migrare îl tolerează la prima deschidere și îl notează.
 
 **După reparații:** 63 de teste unitare și 159 în browser trec (`npm run verify`, ieșire 0).
+
+## Faza 8b — A doua revizie independentă (alt agent, de la zero) și reparațiile
+Reparațiile 2, 4, 5, 6 și 7 au fost confirmate. Constatări noi:
+| # | Constatare | Gravitate | Reparat |
+| --- | --- | --- | --- |
+| 1 | O legătură obișnuită nouă recalcula starea țintei numărând și legăturile din intrări arhivate: problema redevenea „rezolvată”, iar verificarea integrității arăta memoria ca deteriorată după o folosire normală | medie-mare | recalcularea folosește doar sursele oficiale (test) |
+| 2 | Ștergerea definitivă lăsa în jurnal explicația unei legături eliminate anterior | medie (confidențialitate) | se șterg textele tuturor legăturilor care au atins vreodată intrarea (test) |
+| 3 | „O decizie se înlocuiește o singură dată” se putea ocoli prin restaurarea unui înlocuitor arhivat | mică | restaurarea e refuzată cu un mesaj clar (test) |
+| 4 | Scriptul de bază prefera eticheta (mutabilă) commit-ului fix | mică | commit-ul fix întâi; eticheta doar dacă indică același commit |
+
+După reparații: **66 de teste unitare** trec.

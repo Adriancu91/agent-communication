@@ -73,14 +73,17 @@ core/ (project.ts, journal.ts, memory.ts) ← reguli și formate, fără stocare
 | Relație | Sens | Reguli |
 | --- | --- | --- |
 | `derived_from` | A decurge din B | fără cicluri |
-| `replaces` | decizia nouă → decizia veche | doar decizii; ținta devine `replaced`; fără cicluri; o decizie se înlocuiește o singură dată |
+| `replaces` | decizia nouă → decizia veche | doar decizii; ținta devine `replaced`; fără cicluri; o decizie se înlocuiește o singură dată (și restaurarea unui înlocuitor vechi e refuzată dacă decizia a fost înlocuită între timp) |
 | `resolves` | X → problema | ținta e o problemă, sursa nu; ținta devine `resolved` |
 | `related_to` | A ↔ B | duplicatul e verificat în ambele sensuri |
 
 Reguli comune:
 - același proiect; fără legături cu sine; fără duplicate;
 - legăturile noi sunt permise doar între intrări confirmate și nearhivate;
-- la ștergerea definitivă a unei intrări, legăturile ei dispar, iar starea capătului celălalt se recalculează (o decizie al cărei înlocuitor e șters redevine activă).
+- la ștergerea definitivă a unei intrări, legăturile ei dispar, iar starea capătului celălalt se recalculează (o decizie al cărei înlocuitor e șters redevine activă);
+- tot la ștergerea definitivă, se șterg și explicațiile **tuturor** legăturilor care au atins intrarea, inclusiv ale celor eliminate anterior.
+
+Starea „înlocuită” sau „rezolvată” vine **doar din legături care pornesc de la intrări oficiale**: dacă înlocuitorul e arhivat, decizia veche redevine curentă, iar la restaurare redevine „înlocuită”.
 
 **Evenimentele noi din jurnal:**
 - `memory.created`, `.edited`, `.important`, `.archived`, `.restored`, `.confirmed`, `.rejected`, `.status`, `.purged`;

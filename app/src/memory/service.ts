@@ -28,7 +28,7 @@ export interface NewEntry {
   important?: boolean;
 }
 
-const STORES = ["projects", "memory", "links"];
+const STORES = ["projects", "memory", "links", "events"];
 
 const getEntry = (tx: IDBTransaction, id: string) => req(tx.objectStore("memory").get(id) as IDBRequest<MemoryEntry | undefined>);
 const projectLinks = (tx: IDBTransaction, projectId: string) =>
@@ -181,7 +181,14 @@ export class MemoryStore {
   async restore(id: string): Promise<MemoryEntry> {
     return this.update(id, (e) => (!e.archived || e.confirmation === "rejected" ? null : {
       next: { ...e, archived: false }, event: { type: "memory.restored", data: {} },
-    }));
+    }), (e, links, all) => {
+      // a decision is replaced only once: restoring a replacement whose target was replaced again meanwhile is refused
+      const byId = new Map(all.map((x) => [x.id, x]));
+      for (const l of links.filter((x) => x.from === e.id && x.type === "replaces")) {
+        const other = links.some((x) => x.to === l.to && x.type === "replaces" && x.from !== e.id && !!byId.get(x.from) && isOfficial(byId.get(x.from)!));
+        if (other) throw new LinkError("alreadyReplaced");
+      }
+    });
   }
 
   /** Makes a pending AI proposal official. Records when it was confirmed. */
@@ -201,7 +208,8 @@ export class MemoryStore {
   }
 
   private async update(id: string, change: (e: MemoryEntry, ts: string) =>
-    { next: MemoryEntry; event: Omit<PendingEvent, "projectId" | "entityId">; keepDate?: boolean } | null): Promise<MemoryEntry> {
+    { next: MemoryEntry; event: Omit<PendingEvent, "projectId" | "entityId">; keepDate?: boolean } | null,
+    precheck?: (e: MemoryEntry, links: MemoryLink[], all: MemoryEntry[]) => void): Promise<MemoryEntry> {
     if (!isEntryId(id)) throw new StorageError("conflict", "bad id");
     return this.base.write(STORES, async (tx, ts) => {
       const cur = await getEntry(tx, id);
@@ -212,6 +220,7 @@ export class MemoryStore {
       const next = c.keepDate ? c.next : { ...c.next, updatedAt: ts };
       // archiving / restoring / confirming an entry can change the status of what it replaces or resolves
       const [links, all] = await Promise.all([projectLinks(tx, cur.projectId), projectEntries(tx, cur.projectId)]);
+      precheck?.(next, links, all);
       const cascade = statusUpdates(links, all, [next], ts);
       return {
         result: next,
@@ -244,6 +253,13 @@ export class MemoryStore {
       const allById = new Map(all.map((e) => [e.id, e]));
       const officialSrc = (x: string) => x !== id && !!allById.get(x) && isOfficial(allById.get(x)!);
       const touching = links.filter((l) => l.from === id || l.to === id);
+      const projectEvents = await req(tx.objectStore("events").index("projectId").getAll(IDBKeyRange.only(cur.projectId)) as IDBRequest<JournalEvent[]>);
+      const pastLinkIds = new Set([
+        ...touching.map((l) => l.id),
+        ...projectEvents
+          .filter((ev) => ev.type === "link.created" && ev.entityId && ev.data && ((ev.data as { from?: string }).from === id || (ev.data as { to?: string }).to === id))
+          .map((ev) => ev.entityId!),
+      ]);
       const remaining = links.filter((l) => l.from !== id && l.to !== id);
       const others = [...new Set(touching.map((l) => (l.from === id ? l.to : l.from)))];
       const otherEntries = (await Promise.all(others.map((o) => getEntry(tx, o)))).filter(Boolean) as MemoryEntry[];
@@ -260,10 +276,10 @@ export class MemoryStore {
         events,
         apply: async (w) => {
           w.objectStore("memory").delete(id);
-          for (const l of touching) {
-            w.objectStore("links").delete(l.id);
-            await eraseEventData(w, "entityId", l.id); // link reasons may contain the deleted text
-          }
+          for (const l of touching) w.objectStore("links").delete(l.id);
+          // erase the texts of every link that EVER touched this entry, including links removed earlier
+          // (link reasons may talk about the deleted entry)
+          for (const linkId of pastLinkIds) await eraseEventData(w, "entityId", linkId);
           for (const { o, status } of statusChanges) w.objectStore("memory").put({ ...o, status });
           await eraseEventData(w, "entityId", id);
         },
@@ -280,17 +296,21 @@ export class MemoryStore {
     if (charCount(r) > REASON_MAX) throw new MemoryValidationError("reason", "tooLong");
     return this.base.write(STORES, async (tx, ts) => {
       const [from, to] = await Promise.all([isEntryId(fromId) ? getEntry(tx, fromId) : undefined, isEntryId(toId) ? getEntry(tx, toId) : undefined]);
-      const links = from ? await projectLinks(tx, from.projectId) : [];
+      const [links, entries] = from ? await Promise.all([projectLinks(tx, from.projectId), projectEntries(tx, from.projectId)]) : [[], []];
       const problem = checkLink(from, to, type, links);
       if (problem) throw new LinkError(problem);
       await assertWritable(tx, from!.projectId);
-      return this.planLink(from!, to!, type, r, ts, links);
+      return this.planLink(from!, to!, type, r, ts, links, entries);
     });
   }
 
-  private planLink(from: MemoryEntry, to: MemoryEntry, type: LinkType, reason: string, ts: string, links: MemoryLink[], extra: PendingEvent[] = [], extraApply?: (w: IDBTransaction) => void) {
+  private planLink(from: MemoryEntry, to: MemoryEntry, type: LinkType, reason: string, ts: string, links: MemoryLink[],
+    entries: MemoryEntry[], extra: PendingEvent[] = [], extraApply?: (w: IDBTransaction) => void) {
     const link: MemoryLink = { id: newLinkId(), projectId: from.projectId, from: from.id, to: to.id, type, reason, createdAt: ts, v: 1 };
-    const status = statusFromLinks(to.id, [...links, link]);
+    // only links from OFFICIAL entries count (the new link's source is official: checkLink requires it)
+    const byId = new Map(entries.map((e) => [e.id, e]));
+    byId.set(from.id, from);
+    const status = statusFromLinks(to.id, [...links, link], (x) => !!byId.get(x) && isOfficial(byId.get(x)!));
     const target = status !== to.status ? { ...to, status, updatedAt: ts } : null;
     return {
       result: link,
@@ -349,7 +369,7 @@ export class MemoryStore {
       const old = isEntryId(oldId) ? await getEntry(tx, oldId) : undefined;
       if (!old) throw new LinkError("missing");
       await assertWritable(tx, old.projectId);
-      const links = await projectLinks(tx, old.projectId);
+      const [links, entries] = await Promise.all([projectLinks(tx, old.projectId), projectEntries(tx, old.projectId)]);
       const entry: MemoryEntry = {
         id: newEntryId(), projectId: old.projectId, category: "decision", title, body, important: !!input.important,
         status: "active", archived: false, author: "user", source: null, confirmation: "confirmed", confirmedAt: ts,
@@ -360,7 +380,7 @@ export class MemoryStore {
       const created: PendingEvent = { type: "memory.created", projectId: old.projectId, entityId: entry.id, data: {
         category: "decision", title, body, important: entry.important, author: "user", source: null, confirmation: "confirmed", version: 1,
       } };
-      const plan = this.planLink(entry, old, "replaces", r, ts, links, [created], (w) => void w.objectStore("memory").add(entry));
+      const plan = this.planLink(entry, old, "replaces", r, ts, links, entries, [created], (w) => void w.objectStore("memory").add(entry));
       return { ...plan, result: { entry, link: plan.result } };
     });
   }
@@ -380,7 +400,7 @@ export class MemoryStore {
       const issue = isEntryId(issueId) ? await getEntry(tx, issueId) : undefined;
       if (!issue) throw new LinkError("missing");
       await assertWritable(tx, issue.projectId);
-      const links = await projectLinks(tx, issue.projectId);
+      const [links, entries] = await Promise.all([projectLinks(tx, issue.projectId), projectEntries(tx, issue.projectId)]);
       const entry: MemoryEntry = {
         id: newEntryId(), projectId: issue.projectId, category: by.category, title, body, important: false,
         status: "active", archived: false, author: "user", source: null, confirmation: "confirmed", confirmedAt: ts,
@@ -391,7 +411,7 @@ export class MemoryStore {
       const created: PendingEvent = { type: "memory.created", projectId: issue.projectId, entityId: entry.id, data: {
         category: by.category, title, body, important: false, author: "user", source: null, confirmation: "confirmed", version: 1,
       } };
-      return this.planLink(entry, issue, "resolves", r, ts, links, [created], (w) => void w.objectStore("memory").add(entry));
+      return this.planLink(entry, issue, "resolves", r, ts, links, entries, [created], (w) => void w.objectStore("memory").add(entry));
     });
   }
 
