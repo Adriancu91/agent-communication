@@ -1,7 +1,7 @@
 // AIW-04: export / import — ZIP safety, archive validation, round trip, duplicates, atomicity, compatibility.
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CATEGORIES, canonical, type MemoryEntry } from "../../src/core";
+import { CATEGORIES, canonical, eventHash, newLinkId, sha256, type MemoryEntry } from "../../src/core";
 import {
   ArchiveError, archiveFiles, crc32, createZip, EXPORT_VERSION, ImportError, MANIFEST_NAME, parseArchive, readZip,
   TransferService, ZipError, type ProjectFile,
@@ -173,8 +173,11 @@ describe("export → import on a clean device", () => {
     // the replaced copy's history is still in A's journal (nothing deleted), but no longer shown
     const journal = await a.base.journal();
     expect(journal.filter((e) => e.projectId === one.p.id && e.type === "project.created")).toHaveLength(2);
-    // two import records: A's own, and B's (part of the history that came back from B)
-    expect(journal.filter((e) => e.type === "project.imported").map((e) => (e.data as { mode: string }).mode)).toEqual(["replace", "add"]);
+    // one import record on A (its own, the latest), which keeps B's earlier record inside it
+    const markers = journal.filter((e) => e.type === "project.imported");
+    expect(markers.map((e) => (e.data as { mode: string }).mode)).toEqual(["replace"]);
+    expect((markers[0].data as { previous?: { mode: string } }).previous?.mode).toBe("add");
+    expect((await a.memory.timeline(one.p.id)).length).toBeGreaterThan(0); // history shown after the replace
     // the same archive again: identical → default "skip"
     const again = await a.transfer.preview(back.bytes);
     expect(again.projects[0]).toMatchObject({ match: "same", choices: ["skip", "copy"] });
@@ -368,4 +371,172 @@ describe("every byte of an exported archive is protected", () => {
     }
     expect(accepted.filter((i) => !harmless.has(i))).toEqual([]);
   }, 60_000);
+});
+
+describe("crafted archives (independent review findings)", () => {
+  /** Re-seals a tampered project file: recomputes every fingerprint and chain link, as a careful forger would. */
+  async function reseal(pf: ProjectFile): Promise<Map<string, Uint8Array>> {
+    let prev: { seq: number; hash: string } | null = null;
+    for (const e of pf.events) {
+      e.dataHash = await sha256(canonical(e.data));
+      if (prev && e.seq === prev.seq + 1) e.prev = prev.hash;
+      e.hash = await eventHash(e);
+      prev = e;
+    }
+    return new Map((await archiveFiles([pf], { app: "x", exportedAt: "2026-11-07T10:00:00.000Z", scope: "project", sourceJournal: { ok: true, events: 1 } })).map((f) => [f.name, f.data]));
+  }
+  async function source() {
+    const a = device();
+    const r = await rich(a);
+    const map = await readZip((await a.transfer.exportArchive([r.p.id])).bytes);
+    const pf = JSON.parse(new TextDecoder().decode(map.get(`projects/${r.p.id}.json`)!)) as ProjectFile;
+    return { a, r, pf };
+  }
+
+  it("an untouched archive re-sealed the same way is accepted (the forger's tool is correct)", async () => {
+    const { pf } = await source();
+    await expect(parseArchive(await reseal(pf))).resolves.toBeTruthy();
+  });
+
+  it("refuses malformed data in an OLDER version (it would crash the search later)", async () => {
+    const { pf } = await source();
+    const created = pf.events.find((e) => e.type === "memory.created" && e.entityId === pf.memory.find((m) => m.version === 3)!.id)!;
+    (created.data as Record<string, unknown>).title = {} as unknown as string;
+    (created.data as Record<string, unknown>).body = 42 as unknown as string;
+    await expect(parseArchive(await reseal(pf))).rejects.toMatchObject({ problem: "history" });
+  });
+
+  it("refuses link events with invalid data and import records inside the history", async () => {
+    const { pf } = await source();
+    const l = structuredClone(pf);
+    (l.events.find((e) => e.type === "link.created")!.data as Record<string, unknown>).type = "owns";
+    await expect(parseArchive(await reseal(l))).rejects.toMatchObject({ problem: "history" });
+
+    const m = structuredClone(pf);
+    const last = m.events.at(-1)!;
+    m.events.push({ ...last, seq: last.seq + 1, type: "project.imported", entityId: undefined, data: { mode: "add", name: m.project.name, archive: "0".repeat(64), exportedAt: "2026-11-07T10:00:00.000Z", app: "x", sourceProject: m.project.id, events: 1 } } as never);
+    delete (m.events.at(-1) as { entityId?: string }).entityId;
+    await expect(parseArchive(await reseal(m))).rejects.toMatchObject({ problem: "inconsistent" });
+  });
+
+  it("refuses records that do not match their history (title, flags, AI entry shown as confirmed, links)", async () => {
+    const { pf } = await source();
+    const t = structuredClone(pf);
+    const e = t.memory.find((x) => x.category === "goal")!;
+    e.important = !e.important; // no event says so
+    await expect(parseArchive(await reseal(t))).rejects.toMatchObject({ problem: "inconsistent" });
+
+    const ai = structuredClone(pf);
+    const pending = ai.memory.find((x) => x.confirmation === "pending")!;
+    Object.assign(pending, { confirmation: "confirmed", confirmedAt: pending.createdAt }); // skip the user's confirmation
+    await expect(parseArchive(await reseal(ai))).rejects.toMatchObject({ problem: "inconsistent" });
+
+    const dropped = structuredClone(pf);
+    dropped.events = dropped.events.filter((x) => x.type !== "memory.edited"); // older versions removed
+    for (const x of dropped.memory) if (x.version > 1) x.version = 1;
+    await expect(parseArchive(await reseal(dropped))).rejects.toMatchObject({ problem: "inconsistent" });
+  });
+
+  it("refuses link sets the app would never create (wrong category, cycle, duplicates)", async () => {
+    const { pf } = await source();
+    const facts = pf.memory.filter((x) => x.category === "fact" && x.confirmation === "confirmed");
+    const ctx = pf.memory.find((x) => x.category === "context" && !x.archived)!;
+    const addLink = async (f: ProjectFile, from: string, to: string, type: string) => {
+      const id = newLinkId();
+      f.links.push({ id, projectId: f.project.id, from, to, type: type as never, reason: "", createdAt: f.project.createdAt, v: 1 });
+      const last = f.events.at(-1)!;
+      f.events.push({ seq: last.seq + 1, ts: last.ts, type: "link.created", projectId: f.project.id, entityId: id, dataHash: "", data: { from, to, type, reason: "" }, prev: last.hash, hash: "" });
+    };
+    const wrongCat = structuredClone(pf);
+    await addLink(wrongCat, facts[0].id, ctx.id, "replaces");
+    await expect(parseArchive(await reseal(wrongCat))).rejects.toMatchObject({ problem: "inconsistent" });
+
+    const cycle = structuredClone(pf); // fact derived_from context already exists; add context derived_from fact
+    await addLink(cycle, ctx.id, facts[0].id, "derived_from");
+    await expect(parseArchive(await reseal(cycle))).rejects.toMatchObject({ problem: "inconsistent" });
+
+    const dup = structuredClone(pf); // goal related_to instruction exists; add the reverse
+    const rel = dup.links.find((x) => x.type === "related_to")!;
+    await addLink(dup, rel.to, rel.from, "related_to");
+    await expect(parseArchive(await reseal(dup))).rejects.toMatchObject({ problem: "inconsistent" });
+  });
+
+  it("refuses removed or reordered neighbouring events, and impossible field combinations", async () => {
+    const { pf } = await source();
+    // remove one event between two neighbours, without re-sealing the chain (only the file fingerprint)
+    const gap = structuredClone(pf);
+    const i = gap.events.findIndex((e, k) => k > 0 && k < gap.events.length - 1 && gap.events[k - 1].seq + 1 === e.seq && gap.events[k + 1].seq === e.seq + 1);
+    gap.events.splice(i, 1);
+    const files = new Map((await archiveFiles([gap], { app: "x", exportedAt: "2026-11-07T10:00:00.000Z", scope: "project", sourceJournal: { ok: true, events: 1 } })).map((f) => [f.name, f.data]));
+    await expect(parseArchive(files)).rejects.toBeInstanceOf(ArchiveError); // caught by the chain or by the replay
+
+    const combo = structuredClone(pf);
+    combo.memory.find((x) => x.confirmation === "pending")!.confirmedAt = combo.project.createdAt;
+    await expect(parseArchive(await reseal(combo))).rejects.toMatchObject({ problem: "inconsistent" });
+
+    const nh = structuredClone(pf);
+    nh.project.nameHistory.push({ name: "‮evil\u0007", until: nh.project.createdAt });
+    await expect(parseArchive(await reseal(nh))).rejects.toMatchObject({ problem: "invalidRecord" });
+  });
+
+  it("a re-imported copy keeps this device's import record as the latest one, with the earlier one inside", async () => {
+    const a = device();
+    const { p } = await rich(a);
+    const b = device();
+    await b.transfer.importArchive(await b.transfer.preview((await a.transfer.exportArchive([p.id])).bytes)); // add on B
+    const back = await b.transfer.exportArchive([p.id]);
+    const res = await a.transfer.importArchive(await a.transfer.preview(back.bytes), { [p.id]: "copy" });
+    const copyId = res.imported[0].id;
+    const markers = (await a.base.journal()).filter((e) => e.projectId === copyId && e.type === "project.imported");
+    expect(markers).toHaveLength(1);
+    expect(markers[0].data).toMatchObject({ mode: "copy", sourceProject: p.id, previous: { mode: "add", sourceProject: p.id } });
+    expect((await a.memory.verify(copyId)).ok).toBe(true);
+    expect((await a.memory.versions(copyId)).size).toBeGreaterThan(0);
+    // and the copy exports and imports again
+    const c = device();
+    await c.transfer.importArchive(await c.transfer.preview((await a.transfer.exportArchive([copyId])).bytes));
+    expect((await c.memory.verify(copyId)).ok).toBe(true);
+  });
+
+  it("projects with the same name inside one archive get free names", async () => {
+    const a = device();
+    await a.projects.create("X");
+    const b = device();
+    await b.projects.create("X");
+    const ids = (await a.projects.list()).map((p) => p.id).concat((await b.projects.list()).map((p) => p.id));
+    void ids;
+    const c = device();
+    await c.transfer.importArchive(await c.transfer.preview((await a.transfer.exportArchive("all")).bytes));
+    await c.transfer.importArchive(await c.transfer.preview((await b.transfer.exportArchive("all")).bytes));
+    expect((await c.projects.list()).map((p) => p.name).sort()).toEqual(["X", "X (2)"]);
+  });
+
+  it("a failure DURING the write transaction leaves everything as it was", async () => {
+    const a = device();
+    await rich(a, "Unu");
+    await rich(a, "Doi");
+    const all = await a.transfer.exportArchive("all");
+    const b = device();
+    await b.projects.create("Existent");
+    const before = { projects: await b.projects.list(), journal: await b.base.journal() };
+    const pv = await b.transfer.preview(all.bytes);
+    const proto = (globalThis as unknown as { IDBObjectStore: { prototype: { add: (...a: unknown[]) => unknown } } }).IDBObjectStore.prototype;
+    const add = proto.add;
+    let n = 0;
+    proto.add = function (this: unknown, ...args: unknown[]) {
+      if (++n === 20) throw new DOMException("simulated full disk", "QuotaExceededError");
+      return add.apply(this, args);
+    };
+    try {
+      await expect(b.transfer.importArchive(pv)).rejects.toMatchObject({ kind: "quota" });
+    } finally {
+      proto.add = add;
+    }
+    expect(await b.projects.list()).toEqual(before.projects);
+    expect(await b.base.journal()).toEqual(before.journal);
+    expect((await b.base.verify()).ok).toBe(true);
+    // and the same import then succeeds
+    await b.transfer.importArchive(pv);
+    expect((await b.projects.list()).length).toBe(3);
+  });
 });

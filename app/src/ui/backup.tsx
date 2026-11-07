@@ -1,7 +1,11 @@
 // AIW-04 screens: export (one project / all), and import with a preview and a choice per project.
 import type { JSX } from "preact";
 import { useRef, useState } from "preact/hooks";
-import { ArchiveError, ImportError, TransferService, ZipError, type ImportChoice, type ImportPreview, type PreviewProject } from "../archive";
+import { CATEGORIES } from "../core";
+import {
+  ArchiveError, ImportError, MAX_ARCHIVE_BYTES, TransferService, ZipError,
+  type ImportChoice, type ImportPreview, type PreviewProject, type ProjectFile,
+} from "../archive";
 import { base, errorKey } from "./data";
 import { fill, useDate, useI18n, type Key } from "./i18n";
 import { Dialog, toast } from "./widgets";
@@ -12,7 +16,7 @@ export const transfer = new TransferService(base, __APP_VERSION__);
 export function transferErrorKey(e: unknown): Key {
   if (e instanceof ZipError) {
     if (e.problem === "notZip") return "imp_notZip";
-    if (e.problem === "tooLarge" || e.problem === "tooManyFiles" || e.problem === "sizeMismatch") return "imp_tooLarge";
+    if (e.problem === "tooLarge" || e.problem === "tooManyFiles") return "imp_tooLarge";
     if (e.problem === "unsupportedMethod" || e.problem === "encrypted" || e.problem === "zip64") return "imp_unsupported";
     return "imp_damaged";
   }
@@ -30,19 +34,27 @@ export function transferErrorKey(e: unknown): Key {
 interface Ready { file: File; count: number }
 
 /** Builds the archive, then shows a dialog with the download (a fresh tap: some phones need it to save a file). */
-export function useExport(): { start: (ids: string[] | "all") => Promise<void>; dialog: JSX.Element | null } {
+export function useExport(): { start: (ids: string[] | "all") => Promise<void>; busy: boolean; dialog: JSX.Element | null } {
   const { t } = useI18n();
   const [ready, setReady] = useState<Ready | null>(null);
+  const [busy, setBusy] = useState(false);
+  const running = useRef(false);
   const start = async (ids: string[] | "all") => {
+    if (running.current) return; // one export at a time
+    running.current = true;
+    setBusy(true);
     try {
       const { bytes, fileName, count } = await transfer.exportArchive(ids);
       setReady({ file: new File([bytes as BlobPart], fileName, { type: "application/zip" }), count });
     } catch (e) {
       toast({ text: t(transferErrorKey(e)), error: true });
+    } finally {
+      running.current = false;
+      setBusy(false);
     }
   };
   const dialog = ready ? <ExportReady ready={ready} onClose={() => setReady(null)} /> : null;
-  return { start, dialog };
+  return { start, busy, dialog };
 }
 
 function ExportReady(props: { ready: Ready; onClose: () => void }): JSX.Element {
@@ -89,15 +101,19 @@ export function ImportButton(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const pick = async (f: File | undefined) => {
     if (!f) return;
-    setBusy(true);
     setError(null);
+    if (input.current) input.current.value = ""; // the same file can be chosen again
+    if (f.size > MAX_ARCHIVE_BYTES) {
+      setError(t("imp_tooLarge")); // refused before reading it into memory
+      return;
+    }
+    setBusy(true);
     try {
       setPreview(await transfer.preview(new Uint8Array(await f.arrayBuffer())));
     } catch (e) {
       setError(t(transferErrorKey(e)));
     } finally {
       setBusy(false);
-      if (input.current) input.current.value = ""; // the same file can be chosen again
     }
   };
   return (
@@ -108,7 +124,12 @@ export function ImportButton(): JSX.Element {
         {busy ? t("importChecking") : t("importButton")}
       </button>
       {error && <p class="form-error" role="alert" data-import-error>{error}</p>}
-      {preview && <ImportDialog preview={preview} onClose={() => setPreview(null)} />}
+      {preview && (
+        <ImportDialog preview={preview} onClose={() => setPreview(null)} onStale={(msg) => {
+          setPreview(null); // the preview no longer matches this device: it must be read again
+          setError(msg);
+        }} />
+      )}
     </>
   );
 }
@@ -116,15 +137,72 @@ export function ImportButton(): JSX.Element {
 const CHOICE_KEY: Record<ImportChoice, Key> = { add: "impAdd", skip: "impSkip", replace: "impReplace", copy: "impCopy" };
 const MATCH_KEY: Record<PreviewProject["match"], Key> = { new: "impMatchNew", same: "impMatchSame", sameId: "impMatchSameId", sameName: "impMatchSameName" };
 
-function ImportDialog(props: { preview: ImportPreview; onClose: () => void }): JSX.Element {
+/** A row of choices that behaves like radio buttons, including the arrow keys. */
+function Choices(props: { label: string; options: ImportChoice[]; value: ImportChoice; onChange: (c: ImportChoice) => void }): JSX.Element {
+  const { t } = useI18n();
+  const move = (e: KeyboardEvent) => {
+    const i = props.options.indexOf(props.value);
+    const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+    if (!step) return;
+    e.preventDefault();
+    const next = props.options[(i + step + props.options.length) % props.options.length];
+    props.onChange(next);
+    ((e.currentTarget as HTMLElement).querySelector(`[data-choice="${next}"]`) as HTMLElement | null)?.focus();
+  };
+  return (
+    <div class="segmented choices" role="radiogroup" aria-label={props.label} onKeyDown={move}>
+      {props.options.map((c) => (
+        <button key={c} type="button" role="radio" aria-checked={props.value === c} tabIndex={props.value === c ? 0 : -1}
+          class={props.value === c ? "on" : ""} data-choice={c} onClick={() => props.onChange(c)}>
+          {t(CHOICE_KEY[c])}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** What the archived project contains, by section: the titles, with proposals and archived items marked. */
+function Contents(props: { pf: ProjectFile }): JSX.Element {
+  const { t } = useI18n();
+  const shown = props.pf.memory.slice(0, 300);
+  return (
+    <details class="import-contents">
+      <summary>{t("importShowContent")}</summary>
+      {props.pf.project.description && <p class="muted small-left">{props.pf.project.description}</p>}
+      {shown.length === 0 && <p class="muted small-left">{t("importNoMemory")}</p>}
+      {CATEGORIES.map((c) => {
+        const list = shown.filter((e) => e.category === c);
+        if (!list.length) return null;
+        return (
+          <div key={c}>
+            <p class="small-left"><strong>{t(`cat_${c}` as Key)}</strong></p>
+            <ul class="plain small-left">
+              {list.map((e) => (
+                <li key={e.id} data-import-entry={e.title}>
+                  {e.title}
+                  {e.confirmation === "pending" ? ` · ${t("memPendingBadge")}` : e.confirmation === "rejected" ? ` · ${t("memRejectedBadge")}` : e.archived ? ` · ${t("importArchived")}` : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
+      {props.pf.memory.length > shown.length && <p class="muted small-left">…</p>}
+    </details>
+  );
+}
+
+function ImportDialog(props: { preview: ImportPreview; onClose: () => void; onStale: (msg: string) => void }): JSX.Element {
   const { t } = useI18n();
   const date = useDate();
   const pv = props.preview;
+  const exp = useExport();
   const [choices, setChoices] = useState<Record<string, ImportChoice>>(() => Object.fromEntries(pv.projects.map((p) => [p.id, p.choices[0]])));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [backupOk, setBackupOk] = useState(false);
   const todo = pv.projects.filter((p) => choices[p.id] !== "skip").length;
-  const replacing = pv.projects.some((p) => choices[p.id] === "replace");
+  const replacing = pv.projects.filter((p) => choices[p.id] === "replace");
 
   const run = async () => {
     setBusy(true);
@@ -133,49 +211,66 @@ function ImportDialog(props: { preview: ImportPreview; onClose: () => void }): J
       const res = await transfer.importArchive(pv, choices);
       props.onClose();
       toast({ text: fill(t("importDone"), { n: String(res.imported.length) }) });
+      return;
     } catch (e) {
+      if (e instanceof ImportError && e.reason === "changed") {
+        props.onStale(t("imp_changed"));
+        return;
+      }
       setError(t(transferErrorKey(e))); // nothing was changed: the import is all or nothing
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   };
 
   return (
     <Dialog title={t("importTitle")} onClose={props.onClose} id="import-dialog">
       <p class="ok-line" data-integrity="ok">✓ {t("importVerified")}</p>
       <p class="muted small-left">{t("importFrom")} {date(pv.exportedAt)} · {t("version")} {pv.app}</p>
+      <p class="muted small-left">{t("importTrust")}</p>
       {!pv.sourceJournalOk && <p class="muted">{t("importSourceWarning")}</p>}
       <ul class="import-list">
-        {pv.projects.map((p) => (
-          <li key={p.id} class="import-item" data-import={p.name} data-match={p.match}>
-            <p class="row-name">{p.name}{p.trashed ? ` · ${t("importInTrash")}` : ""}</p>
-            <p class="muted small-left">
-              {fill(t("importCounts"), { e: String(p.counts.entries), l: String(p.counts.links), v: String(p.counts.versions) })}
-              {p.counts.pending > 0 ? ` · ${fill(t("importPending"), { n: String(p.counts.pending) })}` : ""}
-            </p>
-            <p class={p.match === "new" ? "muted small-left" : "small-left warn"}>
-              {t(MATCH_KEY[p.match])}
-              {p.local && p.match !== "new" ? ` (${t("updatedOn")} ${date(p.local.updatedAt)})` : ""}
-            </p>
-            <div class="segmented choices" role="radiogroup" aria-label={`${t("importChoice")} ${p.name}`}>
-              {p.choices.map((c) => (
-                <button key={c} type="button" role="radio" aria-checked={choices[p.id] === c} class={choices[p.id] === c ? "on" : ""}
-                  data-choice={c} onClick={() => setChoices({ ...choices, [p.id]: c })}>
-                  {t(CHOICE_KEY[c])}
-                </button>
-              ))}
-            </div>
-          </li>
-        ))}
+        {pv.projects.map((p) => {
+          const choice = choices[p.id];
+          return (
+            <li key={p.id} class="import-item" data-import={p.name} data-match={p.match}>
+              <p class="row-name">{p.name}{p.trashed ? ` · ${t("importInTrash")}` : ""}</p>
+              <p class="muted small-left">
+                {fill(t("importCounts"), { e: String(p.counts.entries), l: String(p.counts.links), v: String(p.counts.versions) })}
+                {p.counts.pending > 0 ? ` · ${fill(t("importPending"), { n: String(p.counts.pending) })}` : ""}
+              </p>
+              <p class={p.match === "new" ? "muted small-left" : "small-left warn"}>
+                {t(MATCH_KEY[p.match])}
+                {p.local && p.match !== "new" ? ` (${t("updatedOn")} ${date(p.local.updatedAt)})` : ""}
+              </p>
+              {p.renameTo && (choice === "add" || choice === "copy") && (
+                <p class="muted small-left" data-rename={p.renameTo}>{fill(t("importRenamed"), { name: p.renameTo })}</p>
+              )}
+              <Contents pf={pv.archive.projects.find((x) => x.project.id === p.id)!} />
+              <Choices label={`${t("importChoice")} ${p.name}`} options={p.choices} value={choice}
+                onChange={(c) => setChoices({ ...choices, [p.id]: c })} />
+            </li>
+          );
+        })}
       </ul>
-      {replacing && <p class="warn" role="note">{t("importReplaceWarning")}</p>}
+      {replacing.length > 0 && (
+        <div class="warn" role="note" data-replace-note>
+          <p>{t("importReplaceWarning")}</p>
+          <button type="button" class="button secondary small-button" data-action="backup-before-replace" disabled={exp.busy}
+            onClick={() => void exp.start(replacing.map((p) => p.local!.id))}>{t("importBackupFirst")}</button>
+          <label class="check">
+            <input type="checkbox" checked={backupOk} data-action="backup-ok" onChange={(e) => setBackupOk((e.target as HTMLInputElement).checked)} />
+            <span>{t("importBackupCheck")}</span>
+          </label>
+        </div>
+      )}
       {error && <p class="form-error" role="alert">{error}</p>}
       <div class="sheet-actions">
         <button type="button" class="button secondary" onClick={props.onClose}>{t("cancel")}</button>
-        <button type="button" class="button" data-action="confirm-import" disabled={busy || todo === 0} onClick={run}>
+        <button type="button" class="button" data-action="confirm-import" disabled={busy || todo === 0 || (replacing.length > 0 && !backupOk)} onClick={run}>
           {todo === 0 ? t("importNothing") : fill(t("importConfirm"), { n: String(todo) })}
         </button>
       </div>
+      {exp.dialog}
     </Dialog>
   );
 }
@@ -189,7 +284,7 @@ export function BackupCard(): JSX.Element {
       <h2>{t("backupTitle")}</h2>
       <p>{t("backupText")}</p>
       <div class="actions">
-        <button type="button" class="button" data-action="export-all" onClick={() => void exp.start("all")}>{t("exportAll")}</button>
+        <button type="button" class="button" data-action="export-all" disabled={exp.busy} onClick={() => void exp.start("all")}>{t("exportAll")}</button>
         <ImportButton />
       </div>
       <p class="muted">{t("backupMove")}</p>

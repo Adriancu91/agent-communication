@@ -111,7 +111,9 @@ test("damaged or foreign files are refused and change nothing", async ({ page },
 
   const bytes = readFileSync(zip);
   const damaged = Buffer.from(bytes);
-  damaged[Math.floor(damaged.length / 2)] ^= 0xff;
+  // a byte inside the project's data (just before the central directory), not in the file dates
+  const cdOffset = damaged.readUInt32LE(damaged.length - 22 + 16);
+  damaged[cdOffset - 20] ^= 0xff;
   writeFileSync(info.outputPath("damaged.zip"), damaged);
   writeFileSync(info.outputPath("text.zip"), "nu e o arhivă");
   writeFileSync(info.outputPath("cut.zip"), bytes.subarray(0, bytes.length - 30));
@@ -146,7 +148,14 @@ test("duplicates: identical is skipped, a changed copy can replace, same name be
   const item = page.locator('[data-import="Comun"]');
   await expect(item).toHaveAttribute("data-match", "sameId");
   await item.locator('[data-choice="replace"]').click();
-  await expect(page.locator("#import-dialog .warn[role=note]")).toBeVisible();
+  await expect(page.locator("[data-replace-note]")).toBeVisible();
+  // replacing needs a copy of the version here first (or an explicit "I do not need it")
+  await expect(page.locator('[data-action="confirm-import"]')).toBeDisabled();
+  await page.locator('[data-action="backup-before-replace"]').click();
+  const [backup] = await Promise.all([page.waitForEvent("download"), page.locator('#export-ready [data-action="download-export"]').click()]);
+  expect(backup.suggestedFilename()).toMatch(/^ai-workspace-comun-/);
+  await page.locator("#export-ready").getByRole("button", { name: "Închide" }).click();
+  await page.locator('[data-action="backup-ok"]').check();
   await page.locator('[data-action="confirm-import"]').click();
   await expect(page.locator(".toast")).toContainText("Import reușit");
   await openMemory(page, pid);
@@ -158,6 +167,9 @@ test("duplicates: identical is skipped, a changed copy can replace, same name be
   await newProject(other, "Comun");
   await chooseArchive(other, zip);
   await expect(other.locator('[data-import="Comun"]')).toHaveAttribute("data-match", "sameName");
+  await expect(other.locator('[data-rename="Comun (2)"]')).toBeVisible();
+  await other.locator('[data-import="Comun"] summary').click(); // the contents can be checked before importing
+  await expect(other.locator('[data-import-entry="Obiectiv inițial"]')).toBeVisible();
   await other.locator('[data-action="confirm-import"]').click();
   await other.goto("./#/proiecte");
   await expect(other.locator('.row[data-project="Comun (2)"]')).toHaveCount(1);

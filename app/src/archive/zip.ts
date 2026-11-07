@@ -23,7 +23,7 @@ export interface ZipLimits {
   maxTotalBytes: number;
 }
 
-export const DEFAULT_LIMITS: ZipLimits = { maxFiles: 2000, maxFileBytes: 64 * 1024 * 1024, maxTotalBytes: 128 * 1024 * 1024 };
+export const DEFAULT_LIMITS: ZipLimits = { maxFiles: 2000, maxFileBytes: 48 * 1024 * 1024, maxTotalBytes: 96 * 1024 * 1024 };
 
 // ---------- CRC-32 ----------
 

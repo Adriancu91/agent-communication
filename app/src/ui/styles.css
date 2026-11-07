@@ -315,3 +315,7 @@ p:last-child { margin-bottom: 0; }
 .import-item p { margin: 0 0 6px; }
 .segmented.choices { grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); margin-top: 8px; }
 .segmented.choices button { padding: 0 6px; font-size: 15px; }
+.import-contents { margin: 6px 0; }
+.import-contents summary { cursor: pointer; color: var(--accent); min-height: var(--tap); display: flex; align-items: center; }
+.warn .check { margin-top: 8px; }
+.warn p { margin: 0 0 8px; }

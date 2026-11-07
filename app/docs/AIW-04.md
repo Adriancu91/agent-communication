@@ -61,15 +61,15 @@ Nu se scrie nimic până nu trec toate verificările.
   - doar nume simple, fără `..`, fără căi absolute și fără duplicate;
   - doar fișierele așteptate: orice alt fișier, de exemplu `run.js`, duce la refuz.
 - **Limite:**
-  - arhiva are cel mult 64 MB;
-  - un fișier despachetat are cel mult 64 MB, iar toate fișierele împreună cel mult 128 MB.
+  - arhiva are cel mult 32 MB (verificat înainte ca fișierul să fie citit);
+  - un fișier despachetat are cel mult 48 MB, iar toate fișierele împreună cel mult 96 MB.
 - **Protecția la „zip bomb”:** despachetarea se oprește imediat ce depășește mărimea declarată.
 - **Corupția:**
   - **CRC-32** pentru fiecare fișier;
   - antetul local al fiecărui fișier trebuie să coincidă cu cuprinsul arhivei;
   - opțiunile ZIP necunoscute sunt refuzate.
 
-**Verificările formatului** (`src/archive/archive.ts`):
+**Verificările formatului** (`src/archive/archive.ts`, `src/archive/replay.ts`):
 - **Amprentele:** amprenta SHA-256 a fiecărui fișier de proiect trebuie să coincidă cu cea din manifest.
 - **Câmpurile:**
   - fiecare înregistrare are exact câmpurile cunoscute: un câmp în plus, de exemplu `script`, duce la refuz;
@@ -77,17 +77,23 @@ Nu se scrie nimic până nu trec toate verificările.
   - fiecare legătură are ambele capete în același proiect.
 - **Istoricul:**
   - fiecare eveniment are amprenta conținutului și amprenta antetului la fel ca pe dispozitivul de origine;
-  - evenimentele sunt în ordine.
-- **Consecvența:**
-  - textul curent al fiecărei informații e egal cu ultima ei versiune din istoric;
-  - fiecare stare (înlocuită / rezolvată) se potrivește cu legăturile.
+  - evenimentele sunt în ordine; unde două evenimente erau vecine pe dispozitivul de origine, legătura dintre ele (`prev`) trebuie să se potrivească;
+  - datele **fiecărui** eveniment (nu doar ale ultimei versiuni) au forma cerută de tipul lui;
+  - un marcaj de import (`project.imported`) poate fi doar primul eveniment.
+- **Reluarea istoricului:** aplicația reconstruiește proiectul doar din istoric și îl compară cu înregistrările din arhivă:
+  - numele, descrierea, fixarea și coșul;
+  - fiecare informație: text, versiune, categorie, important, arhivată, confirmare, autor, sursă;
+  - fiecare legătură.
+
+  Orice diferență duce la refuz. O propunere AI nu poate apărea „confirmată” dacă istoricul nu conține confirmarea.
+- **Legăturile respectă regulile aplicației:** fără duplicate („legată de” în ambele sensuri), „înlocuiește” doar între decizii, „rezolvă” doar spre o problemă, fără cercuri, o decizie înlocuită de cel mult o decizie oficială.
+- **Stările** (înlocuită / rezolvată) se potrivesc cu legăturile.
 
 **Testul exhaustiv:** am modificat pe rând fiecare octet al unei arhive reale, iar fiecare modificare e refuzată. Excepție fac doar octeții fără înțeles: data fișierelor și numărul de versiune ZIP.
 
-**Ce nu poate garanta verificarea:** amprentele nu sunt o semnătură (aplicația nu are chei, intenționat). Cineva care modifică arhiva **și** recalculează consecvent toate amprentele o poate face acceptată. Verificarea detectează:
-- deteriorarea;
-- modificările făcute de mână;
-- arhivele care nu sunt ale noastre.
+**Ce nu poate garanta verificarea:** amprentele nu sunt o semnătură (aplicația nu are chei, intenționat). Cineva care modifică arhiva **și** reconstruiește consecvent tot istoricul, ca și cum operațiile ar fi fost făcute în aplicație, o poate face acceptată. Verificarea detectează deteriorarea și orice inconsecvență. Interfața spune „deteriorată sau inconsecventă” și cere să imporți doar arhive făcute de tine.
+
+**Previzualizarea arată conținutul:** titlurile informațiilor pe secțiuni, cu propunerile, cele respinse și cele arhivate marcate.
 
 **Nimic din arhivă nu se execută:** fișierele sunt citite doar ca date JSON.
 
@@ -101,8 +107,11 @@ Jurnalul fiecărui dispozitiv e un lanț de amprente și nu poate primi evenimen
    - fiecare eveniment păstrează **data lui originală**, tipul, informația la care se referă și conținutul;
    - versiunile anterioare și istoricul legăturilor se văd la fel ca pe dispozitivul de origine;
    - lanțul dispozitivului rămâne valid.
-3. **Copia nouă:** toate id-urile (proiect, informații, legături) sunt înlocuite consecvent, inclusiv cele din istoric. Dacă numele s-a schimbat, se adaugă un eveniment de redenumire.
-4. **Înlocuirea:**
+3. **Un import anterior:** dacă proiectul fusese importat înainte, marcajul acelui import (primul eveniment arhivat) **nu** se reia ca import al acestui dispozitiv. Se păstrează în câmpul `previous` al marcajului nou (lanțul de proveniență), iar marcajul acestui dispozitiv rămâne ultimul.
+4. **Copia nouă:** toate id-urile (proiect, informații, legături) sunt înlocuite consecvent, inclusiv cele din istoric.
+5. **Numele ocupat:** la adăugare sau copie, dacă numele e deja folosit aici (sau de alt proiect din aceeași arhivă), proiectul primește un nume liber („X (2)”), afișat dinainte în previzualizare, plus un eveniment de redenumire.
+6. **Înlocuirea:**
+   - cere întâi o copie a versiunii de aici: butonul „Exportă întâi copia de aici” și o bifă obligatorie;
    - proiectul, memoria și legăturile de aici sunt înlocuite;
    - **evenimentele vechi rămân în jurnal**, deci nimic nu se șterge din istorie și lanțul rămâne verificabil;
    - istoricul afișat, versiunile și verificarea integrității pornesc de la ultimul `project.imported` al proiectului (`currentEvents()` în `core/journal.ts`).
@@ -141,7 +150,26 @@ Modulul `archive` era deja prevăzut în arhitectură (`src/modules.json`: `arch
 - duplicate: identic → nimic de importat; schimbat → înlocuire; același nume → „Comun (2)”;
 - exportul tuturor proiectelor și importul **fără internet** (doar în motorul Chrome: în teste, motorul iPhone al Playwright nu pornește fiabil service worker-ul; aceeași regulă ca în AIW-01 și AIW-03).
 
-## 7. Limitări
+## 7. Verificarea independentă
+Un agent separat, care nu a scris codul, a verificat AIW-04 și a rulat probe proprii. A găsit 12 probleme (nicio pierdere de date la folosire normală; tranzacția de import s-a anulat corect la o eroare provocată). Toate cele cu efect au fost reparate, fiecare cu test:
+
+| # | Problema găsită | Reparația |
+| --- | --- | --- |
+| 1 | date greșite în versiuni **vechi** acceptate (căutarea în versiuni ar fi căzut) | verificarea datelor fiecărui eveniment, după tip |
+| 2 | un marcaj de import în mijlocul istoricului ascundea istoria | marcajul e permis doar primul; consecvența se verifică pe tot istoricul |
+| 3 | legături împotriva regulilor (cerc, categorie greșită, duplicate) acceptate | regulile legăturilor aplicate la import |
+| 4 | textul promitea detectarea oricărei modificări | texte oneste („deteriorată sau inconsecventă”, „nu e o semnătură”); reluarea istoricului; propunerile AI nu pot apărea confirmate fără confirmare; conținutul arătat în previzualizare |
+| 5 | „Înlocuiește” ascunde ce s-a lucrat aici după export | buton „Exportă întâi copia de aici” + bifă obligatorie; avertisment exact |
+| 6 | combinații imposibile de câmpuri, nume vechi cu caractere de control | verificate |
+| 7 | marcajele de import reluate stricau proveniența | marcajul vechi păstrat în `previous`; marcajul dispozitivului rămâne ultimul |
+| 8 | două proiecte cu același nume în aceeași arhivă | nume libere și la adăugare |
+| 9 | fișierul era citit integral înainte de verificarea mărimii | mărimea verificată înainte; limite mai mici |
+| 11 | butoane alegere fără săgeți; fereastra rămânea deschisă după „s-a schimbat între timp”; export pornit de două ori | reparate |
+| 12 | lipseau teste pentru cazurile de mai sus și pentru o eroare **în timpul** scrierii | 9 teste noi, inclusiv „disc plin” simulat la mijlocul importului |
+
+Rămase (documentate, nu reparate): **#10** importurile foarte mari (zeci de mii de evenimente) calculează amprentele cât timp țin blocată scrierea; durează, fără bară de progres. **#5 parțial:** după „Înlocuiește”, textele versiunii locale rămân în jurnalul intern (nevizibile) până la ștergerea definitivă a proiectului.
+
+## 8. Limitări
 - **Arhiva nu e criptată.** Interfața o spune. Criptarea cu parolă e o opțiune pentru mai târziu.
 - **Nu există sincronizare automată.** Mutarea între dispozitive e manuală (export → import), conform bugetului zero și principiului „datele rămân pe dispozitiv”.
 - **„Înlocuiește” nu face o fuziune.** Modificările făcute aici după export nu se mai văd, deși rămân în jurnal. Pentru cazurile nesigure există „Copie nouă”.

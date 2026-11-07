@@ -11,7 +11,7 @@ import { archiveFiles, ArchiveError, parseArchive, type ArchivedEvent, type Pars
 import { createZip, readZip, ZipError } from "./zip";
 
 /** Largest archive file accepted (compressed). */
-export const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
+export const MAX_ARCHIVE_BYTES = 32 * 1024 * 1024;
 
 export type ImportChoice = "add" | "skip" | "replace" | "copy";
 
@@ -36,6 +36,8 @@ export interface PreviewProject {
   updatedAt: string;
   /** Fingerprint of the local copy's content at preview time: the import refuses if it changed meanwhile. */
   localKey?: string;
+  /** The name it will get if imported as a new project and its name is already used here (or earlier in the archive). */
+  renameTo?: string;
 }
 
 export interface ImportPreview {
@@ -147,6 +149,7 @@ export class TransferService {
       }
       return { projects, same };
     });
+    const taken = new Set(local.projects.map((p) => p.name));
     const projects: PreviewProject[] = archive.projects.map((pf) => {
       const p = pf.project;
       const byId = local.projects.find((x) => x.id === p.id);
@@ -168,11 +171,14 @@ export class TransferService {
         match = "sameName";
         choices = ["copy", "skip"];
       }
+      const free = freeName(p.name, taken);
+      if (choices[0] === "add" || choices[0] === "copy") taken.add(free);
       const byCategory: Partial<Record<Category, number>> = {};
       for (const e of pf.memory) byCategory[e.category] = (byCategory[e.category] ?? 0) + 1;
       return {
         id: p.id, name: p.name, description: p.description, trashed: !!p.deletedAt, match, choices, updatedAt: p.updatedAt,
         localKey: byId ? local.same.get(byId.id) : undefined,
+        renameTo: free !== p.name ? free : undefined,
         local: other ? { id: other.id, name: other.name, updatedAt: other.updatedAt, trashed: !!other.deletedAt } : undefined,
         counts: {
           entries: pf.memory.length, byCategory, links: pf.links.length, events: pf.events.length,
@@ -228,14 +234,19 @@ export class TransferService {
         let { project, memory, links, events: history } = structuredClone(pf);
         const mode = choice as Exclude<ImportChoice, "skip">;
         let renamedFrom: string | null = null;
-        if (mode === "copy") {
-          ({ project, memory, links, history } = withNewIds(project, memory, links, history));
+        if (mode === "copy") ({ project, memory, links, history } = withNewIds(project, memory, links, history));
+        // a new project here never takes a name already used here (or earlier in this same import)
+        if (mode === "copy" || mode === "add") {
           const free = freeName(project.name, names);
           if (free !== project.name) {
             renamedFrom = project.name;
             project = { ...project, name: free, nameHistory: [...project.nameHistory, { name: renamedFrom, until: ts }] };
           }
         }
+        // the archive's own import record (if the project was imported before) is not replayed as an
+        // import of this device: it is kept inside this device's new record, which stays the latest one
+        const earlier = history[0]?.type === "project.imported" ? history[0].data : null;
+        if (earlier) history = history.slice(1);
 
         // no entry or link id may already be used by another project here (ids are random: this
         // only happens when the same archive is imported twice in different ways)
@@ -250,8 +261,8 @@ export class TransferService {
         names.add(project.name);
 
         events.push({ type: "project.imported", projectId: project.id, data: {
-          mode, name: project.name, archive: preview.archive.manifestSha256, exportedAt: preview.exportedAt, app: preview.app,
-          sourceProject: pf.project.id, events: history.length,
+          mode, name: renamedFrom ?? project.name, archive: preview.archive.manifestSha256, exportedAt: preview.exportedAt, app: preview.app,
+          sourceProject: pf.project.id, events: history.length, ...(earlier ? { previous: earlier } : {}),
         } });
         for (const e of history) {
           events.push({ type: e.type, projectId: project.id, ...(e.entityId !== undefined ? { entityId: e.entityId } : {}), data: e.data!, ts: e.ts });
@@ -304,7 +315,6 @@ function withNewIds(project: Project, memory: MemoryEntry[], links: MemoryLink[]
         if (typeof data.from === "string") data.from = id(data.from);
         if (typeof data.to === "string") data.to = id(data.to);
       }
-      if (ev.type === "project.imported" && typeof data.sourceProject === "string") data.sourceProject = id(data.sourceProject);
       return { ...ev, projectId: pid, ...(ev.entityId !== undefined ? { entityId: id(ev.entityId) } : {}), data };
     }),
   };

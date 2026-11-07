@@ -15,6 +15,7 @@ import {
   EVENT_TYPES, eventHash, isCategory, isEntryId, isLinkType, isOfficial, REASON_MAX, sha256, statusFromLinks, SOURCE_MAX,
   type JournalEvent, type MemoryEntry, type MemoryLink, type Project,
 } from "../core";
+import { checkEventData, checkProjectExtras, replayProject } from "./replay";
 
 export const EXPORT_FORMAT = "aiw-export";
 /** Version of the archive format. A newer app reads every older version; an older app refuses newer ones. */
@@ -121,7 +122,8 @@ export async function archiveFiles(projects: ProjectFile[], info: { app: string;
     "AI Workspace — export de proiecte",
     "",
     "Arhiva se importă din aplicație: Setări → Copii de siguranță → Importă dintr-o arhivă.",
-    "Nu modifica fișierele din arhivă: fiecare are o amprentă SHA-256, iar aplicația refuză o arhivă modificată.",
+    "Nu modifica fișierele din arhivă: fiecare are o amprentă SHA-256, iar aplicația refuză o arhivă deteriorată sau inconsecventă.",
+    "Amprentele nu sunt o semnătură: păstrează arhiva într-un loc sigur și importă doar arhive făcute de tine.",
     `Creată: ${info.exportedAt} · Proiecte: ${projects.length}`,
     "",
     "AI Workspace — project export. Import it from the app: Settings → Backups → Import from an archive.",
@@ -215,6 +217,7 @@ function checkEntryRecord(e: unknown, projectId: string): MemoryEntry {
   if (e.author !== "user" && e.author !== "ai") throw new ArchiveError("invalidRecord", "entry author");
   if (e.confirmation !== "confirmed" && e.confirmation !== "pending" && e.confirmation !== "rejected") throw new ArchiveError("invalidRecord", "entry confirmation");
   if (e.confirmation === "rejected" && !e.archived) throw new ArchiveError("invalidRecord", "rejected entry not archived");
+  if (e.author === "user" && e.confirmation !== "confirmed") throw new ArchiveError("invalidRecord", "user entry not confirmed");
   if (e.confirmedAt !== null && !isIso(e.confirmedAt)) throw new ArchiveError("invalidRecord", "entry confirmedAt");
   if (!isIso(e.createdAt) || !isIso(e.updatedAt)) throw new ArchiveError("invalidRecord", "entry dates");
   if (typeof e.version !== "number" || !Number.isInteger(e.version) || e.version < 1 || e.v !== 1) throw new ArchiveError("invalidRecord", "entry version");
@@ -237,6 +240,7 @@ function checkLinkRecord(l: unknown, projectId: string, entryIds: Set<string>): 
 async function checkEvents(list: unknown, projectId: string): Promise<ArchivedEvent[]> {
   if (!Array.isArray(list) || list.length > MAX_EVENTS) throw new ArchiveError("history", "events");
   let lastSeq = 0;
+  let previous: ArchivedEvent | null = null;
   for (const e of list as unknown[]) {
     if (!isObj(e)) throw new ArchiveError("history", "event");
     const keys = Object.keys(e).sort().join(",");
@@ -253,25 +257,26 @@ async function checkEvents(list: unknown, projectId: string): Promise<ArchivedEv
     // the content and the header must still have the fingerprints recorded on the source device
     if ((await sha256(canonical(e.data))) !== e.dataHash) throw new ArchiveError("history", `event ${e.seq} content changed`);
     if ((await eventHash(e as unknown as ArchivedEvent)) !== e.hash) throw new ArchiveError("history", `event ${e.seq} changed`);
+    // where two archived events were neighbours on the source device, they must be chained
+    if (previous && e.seq === previous.seq + 1 && e.prev !== previous.hash) throw new ArchiveError("history", `event ${e.seq} chain`);
+    checkEventData(e as unknown as ArchivedEvent);
+    previous = e as unknown as ArchivedEvent;
   }
   return list as ArchivedEvent[];
 }
 
-/** The memory must match its history (same rule as the device's integrity check) and the statuses must match the links. */
+/**
+ * The records must be exactly what their history produces (replay.ts: project, every entry's content
+ * and flags, the links), the links must follow the app's rules, and the statuses must match the links.
+ */
 function checkConsistency(pf: ProjectFile) {
-  const content = new Map<string, ArchivedEvent[]>();
-  for (const ev of pf.events) {
-    if (!ev.entityId || (ev.type !== "memory.created" && ev.type !== "memory.edited")) continue;
-    content.set(ev.entityId, [...(content.get(ev.entityId) ?? []), ev]);
-  }
+  replayProject(pf);
+  checkProjectExtras(pf.project);
   const byId = new Map(pf.memory.map((e) => [e.id, e]));
   const official = (id: string) => !!byId.get(id) && isOfficial(byId.get(id)!);
   for (const e of pf.memory) {
-    const last = content.get(e.id)?.at(-1)?.data as { title?: unknown; body?: unknown; version?: unknown } | undefined;
-    if (!last || last.title !== e.title || last.body !== e.body || last.version !== e.version) throw new ArchiveError("inconsistent", `content ${e.id}`);
     if (e.status !== statusFromLinks(e.id, pf.links, official)) throw new ArchiveError("inconsistent", `status ${e.id}`);
   }
-  if (!pf.events.some((ev) => ev.type === "project.created" || ev.type === "project.imported")) throw new ArchiveError("inconsistent", "no project history");
 }
 
 /** Validates the files of an archive completely. Throws ArchiveError with the first problem found. */
