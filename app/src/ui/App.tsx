@@ -7,6 +7,7 @@ import { setLang, useI18n, type Key, type Lang } from "./i18n";
 import { IconContinuity, IconLauncher, IconMemory, IconProjects, IconSettings } from "./icons";
 import { isStandalone, useOfflineState } from "./offline";
 import { BackupCard } from "./backup";
+import { ContinuityScreen, Launcher, SessionPage } from "./continuity";
 import { ContextPreview, EntryPage, MemoryHistory, MemoryTab, ProjectMemory } from "./memory";
 import { ProjectPage, ProjectsScreen, TrashScreen } from "./projects";
 import { ToastHost } from "./widgets";
@@ -24,7 +25,7 @@ const TABS: { route: Route; label: Key; Icon: () => JSX.Element }[] = [
 /** #/proiecte, #/proiect/<id>, #/cos and the other tabs. Unknown addresses open the project list. */
 interface Location {
   route: Route;
-  view: "list" | "project" | "trash" | "tab" | "memory" | "entry" | "history" | "context";
+  view: "list" | "project" | "trash" | "tab" | "memory" | "entry" | "history" | "context" | "session" | "launch";
   id?: string;
   entry?: string;
 }
@@ -40,6 +41,11 @@ function readRoute(): Location {
     if (rest === "context") return { route: "memorie", view: "context", id };
     return { route: "memorie", view: "entry", id, entry: rest };
   }
+  // AIW-05: a session page; the launcher opened for a project (and, optionally, the session it continues)
+  const ses = /^sesiune\/([^/]+)$/.exec(r);
+  if (ses) return { route: "continuitate", view: "session", id: decodeURIComponent(ses[1]) };
+  const lau = /^lansator\/([^/]+)(?:\/([^/]+))?$/.exec(r);
+  if (lau) return { route: "lansator", view: "launch", id: decodeURIComponent(lau[1]), entry: lau[2] ? decodeURIComponent(lau[2]) : undefined };
   const m = /^proiect\/([^/]+)$/.exec(r);
   if (m) return { route: "proiecte", view: "project", id: decodeURIComponent(m[1]) };
   if (r === "cos") return { route: "proiecte", view: "trash" };
@@ -55,6 +61,7 @@ function useRoute(): Location {
       window.scrollTo(0, 0);
     };
     window.addEventListener("hashchange", on);
+    on(); // an address change between the first render and this listener would otherwise be missed
     return () => window.removeEventListener("hashchange", on);
   }, []);
   return route;
@@ -97,8 +104,9 @@ export function App(): JSX.Element {
         {loc.view === "history" && <MemoryHistory projectId={loc.id!} key={loc.id} />}
         {loc.view === "context" && <ContextPreview projectId={loc.id!} key={loc.id} />}
         {loc.view === "tab" && route === "memorie" && <MemoryTab />}
-        {route === "continuitate" && <Continuity />}
-        {route === "lansator" && <Launcher />}
+        {route === "continuitate" && loc.view === "tab" && <ContinuityScreen />}
+        {loc.view === "session" && <SessionPage id={loc.id!} key={loc.id} />}
+        {route === "lansator" && <Launcher projectId={loc.id} continues={loc.entry} key={`${loc.id}|${loc.entry}`} />}
         {route === "setari" && <Settings />}
       </main>
       <ToastHost />
@@ -112,40 +120,6 @@ function Screen(props: { title: string; children: ComponentChildren }): JSX.Elem
       <h1 class="large-title">{props.title}</h1>
       {props.children}
     </section>
-  );
-}
-
-function Empty(props: { lead: string; hint: string; action?: string }): JSX.Element {
-  const { t } = useI18n();
-  return (
-    <div class="card empty">
-      <p class="lead">{props.lead}</p>
-      <p class="muted">{props.hint}</p>
-      {props.action && (
-        <button type="button" class="button" disabled aria-describedby="soon">
-          {props.action}
-        </button>
-      )}
-      <span class="badge" id="soon">{t("comingSoon")}</span>
-    </div>
-  );
-}
-
-function Continuity(): JSX.Element {
-  const { t } = useI18n();
-  return (
-    <Screen title={t("continuityTitle")}>
-      <Empty lead={t("continuityEmpty")} hint={t("continuityHint")} />
-    </Screen>
-  );
-}
-
-function Launcher(): JSX.Element {
-  const { t } = useI18n();
-  return (
-    <Screen title={t("launcherTitle")}>
-      <Empty lead={t("launcherEmpty")} hint={t("launcherHint")} />
-    </Screen>
   );
 }
 

@@ -223,6 +223,11 @@ export function parseReply(text: string, refs: Record<string, string>, entries: 
       if (best >= 0.6) match = "similar";
       else similarTo = null;
     }
+    // a decision that explicitly replaces X naturally resembles X (and a solution its problem): expected, not a warning
+    if (match === "similar" && similarTo && (similarTo === replaces || similarTo === resolves)) {
+      match = "new";
+      similarTo = null;
+    }
     return {
       key: `p${i}`, category: r.category, title: st.title, body, important: r.important,
       replaces, resolves, reason: [...cleanBody(r.reason)].slice(0, REASON_MAX).join(""), origin: r.origin, match, similarTo, notes,

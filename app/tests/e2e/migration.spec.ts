@@ -114,8 +114,9 @@ for (const engine of ["chromium", "webkit"] as const) {
           };
         };
       }));
-      expect(after.version).toBe(2);
-      expect(after.stores).toEqual(["events", "links", "memory", "meta", "projects"]);
+      // AIW-03 made it 2; AIW-05 adds migration 3 (sessions, exchanges). The AIW-02 data go through every step.
+      expect(after.version).toBe(3);
+      expect(after.stores).toEqual(["events", "exchanges", "links", "memory", "meta", "projects", "sessions"]);
       expect(after.data).toBe(before); // projects (names, descriptions, pins, dates, trash, name history) and journal identical
       await expect(p.locator('.row[data-project="Ofertă Brăila v2"]')).toBeVisible();
       await expect(p.locator('.row[data-project="Șantier Iași 🏗️"] .pin')).toBeVisible();

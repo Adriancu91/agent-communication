@@ -132,6 +132,11 @@ describe("reading an AI reply", () => {
       ["decision", "Preț 4,5 lei/kg", "new"], ["step", "Trimite oferta luni", "new"], ["fact", "Clientul are certificat", "new"], ["step", "step oficial", "duplicate"],
     ]);
     expect(r.proposals[0]).toMatchObject({ replaces: e.decision.id, reason: "piață", body: "Cuprul a crescut" });
+    // a replacement that resembles the decision it replaces is expected, not flagged as "similar"
+    const same = parseReply('```aiw-propuneri\n[{"tip":"decizie","titlu":"decision oficial nou","inlocuieste":"D1"}]\n```', refs(e), await d.memory.list(p.id));
+    expect(same.proposals[0]).toMatchObject({ match: "new", replaces: e.decision.id });
+    const without = parseReply('```aiw-propuneri\n[{"tip":"decizie","titlu":"decision oficial nou"}]\n```', refs(e), await d.memory.list(p.id));
+    expect(without.proposals[0]).toMatchObject({ match: "similar", similarTo: e.decision.id });
     expect(r.proposals[2].resolves).toBe(e.issue.id);
     expect(r.proposals[3].similarTo).toBe(e.step.id);
   });
