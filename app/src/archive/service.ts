@@ -36,8 +36,6 @@ export interface PreviewProject {
   updatedAt: string;
   /** Fingerprint of the local copy's content at preview time: the import refuses if it changed meanwhile. */
   localKey?: string;
-  /** The name it will get if imported as a new project and its name is already used here (or earlier in the archive). */
-  renameTo?: string;
 }
 
 export interface ImportPreview {
@@ -46,6 +44,8 @@ export interface ImportPreview {
   exportedAt: string;
   sourceJournalOk: boolean;
   projects: PreviewProject[];
+  /** Names used on this device (to show which imported projects will get another name). */
+  localNames: string[];
 }
 
 export interface ImportResult {
@@ -81,6 +81,28 @@ export function freeName(name: string, taken: Set<string>): string {
     const candidate = base + suffix;
     if (!taken.has(candidate)) return candidate;
   }
+}
+
+/** Earlier import records, most recent first, flat and bounded (each re-import adds one, the oldest go). */
+export const MAX_EARLIER_IMPORTS = 20;
+function earlierImports(record: Record<string, unknown>): Record<string, unknown>[] {
+  const { previous, ...own } = record;
+  const older = Array.isArray(previous) ? (previous as Record<string, unknown>[]) : [];
+  return [own, ...older].slice(0, MAX_EARLIER_IMPORTS);
+}
+
+/** The names imported projects will get with the given choices (a name already used here becomes "Name (2)"). */
+export function plannedNames(preview: ImportPreview, choices: Record<string, ImportChoice>): Map<string, string> {
+  const taken = new Set(preview.localNames);
+  const out = new Map<string, string>();
+  for (const p of preview.projects) {
+    const c = choices[p.id] ?? p.choices[0];
+    if (c !== "add" && c !== "copy") continue;
+    const free = freeName(p.name, taken);
+    taken.add(free);
+    out.set(p.id, free);
+  }
+  return out;
 }
 
 function slug(name: string): string {
@@ -149,7 +171,6 @@ export class TransferService {
       }
       return { projects, same };
     });
-    const taken = new Set(local.projects.map((p) => p.name));
     const projects: PreviewProject[] = archive.projects.map((pf) => {
       const p = pf.project;
       const byId = local.projects.find((x) => x.id === p.id);
@@ -171,14 +192,11 @@ export class TransferService {
         match = "sameName";
         choices = ["copy", "skip"];
       }
-      const free = freeName(p.name, taken);
-      if (choices[0] === "add" || choices[0] === "copy") taken.add(free);
       const byCategory: Partial<Record<Category, number>> = {};
       for (const e of pf.memory) byCategory[e.category] = (byCategory[e.category] ?? 0) + 1;
       return {
         id: p.id, name: p.name, description: p.description, trashed: !!p.deletedAt, match, choices, updatedAt: p.updatedAt,
         localKey: byId ? local.same.get(byId.id) : undefined,
-        renameTo: free !== p.name ? free : undefined,
         local: other ? { id: other.id, name: other.name, updatedAt: other.updatedAt, trashed: !!other.deletedAt } : undefined,
         counts: {
           entries: pf.memory.length, byCategory, links: pf.links.length, events: pf.events.length,
@@ -188,7 +206,7 @@ export class TransferService {
         },
       };
     });
-    return { archive, app: archive.manifest.app, exportedAt: archive.manifest.exportedAt, sourceJournalOk: archive.manifest.sourceJournal.ok, projects };
+    return { archive, app: archive.manifest.app, exportedAt: archive.manifest.exportedAt, sourceJournalOk: archive.manifest.sourceJournal.ok, projects, localNames: local.projects.map((p) => p.name) };
   }
 
   // ---------- import: write ----------
@@ -262,7 +280,7 @@ export class TransferService {
 
         events.push({ type: "project.imported", projectId: project.id, data: {
           mode, name: renamedFrom ?? project.name, archive: preview.archive.manifestSha256, exportedAt: preview.exportedAt, app: preview.app,
-          sourceProject: pf.project.id, events: history.length, ...(earlier ? { previous: earlier } : {}),
+          sourceProject: pf.project.id, events: history.length, ...(earlier ? { previous: earlierImports(earlier) } : {}),
         } });
         for (const e of history) {
           events.push({ type: e.type, projectId: project.id, ...(e.entityId !== undefined ? { entityId: e.entityId } : {}), data: e.data!, ts: e.ts });

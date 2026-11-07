@@ -3,7 +3,7 @@ import type { JSX } from "preact";
 import { useRef, useState } from "preact/hooks";
 import { CATEGORIES } from "../core";
 import {
-  ArchiveError, ImportError, MAX_ARCHIVE_BYTES, TransferService, ZipError,
+  ArchiveError, ImportError, MAX_ARCHIVE_BYTES, plannedNames, TransferService, ZipError,
   type ImportChoice, type ImportPreview, type PreviewProject, type ProjectFile,
 } from "../archive";
 import { base, errorKey } from "./data";
@@ -203,6 +203,7 @@ function ImportDialog(props: { preview: ImportPreview; onClose: () => void; onSt
   const [backupOk, setBackupOk] = useState(false);
   const todo = pv.projects.filter((p) => choices[p.id] !== "skip").length;
   const replacing = pv.projects.filter((p) => choices[p.id] === "replace");
+  const names = plannedNames(pv, choices); // recomputed from the current choices
 
   const run = async () => {
     setBusy(true);
@@ -231,6 +232,7 @@ function ImportDialog(props: { preview: ImportPreview; onClose: () => void; onSt
       <ul class="import-list">
         {pv.projects.map((p) => {
           const choice = choices[p.id];
+          const renameTo = names.get(p.id);
           return (
             <li key={p.id} class="import-item" data-import={p.name} data-match={p.match}>
               <p class="row-name">{p.name}{p.trashed ? ` · ${t("importInTrash")}` : ""}</p>
@@ -242,8 +244,8 @@ function ImportDialog(props: { preview: ImportPreview; onClose: () => void; onSt
                 {t(MATCH_KEY[p.match])}
                 {p.local && p.match !== "new" ? ` (${t("updatedOn")} ${date(p.local.updatedAt)})` : ""}
               </p>
-              {p.renameTo && (choice === "add" || choice === "copy") && (
-                <p class="muted small-left" data-rename={p.renameTo}>{fill(t("importRenamed"), { name: p.renameTo })}</p>
+              {renameTo && renameTo !== p.name && (
+                <p class="muted small-left" data-rename={renameTo}>{fill(t("importRenamed"), { name: renameTo })}</p>
               )}
               <Contents pf={pv.archive.projects.find((x) => x.project.id === p.id)!} />
               <Choices label={`${t("importChoice")} ${p.name}`} options={p.choices} value={choice}

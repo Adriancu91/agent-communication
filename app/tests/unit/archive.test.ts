@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CATEGORIES, canonical, eventHash, newLinkId, sha256, type MemoryEntry } from "../../src/core";
 import {
   ArchiveError, archiveFiles, crc32, createZip, EXPORT_VERSION, ImportError, MANIFEST_NAME, parseArchive, readZip,
-  TransferService, ZipError, type ProjectFile,
+  TransferService, ZipError, plannedNames, type ProjectFile,
 } from "../../src/archive";
 import { buildContext, MemoryStore } from "../../src/memory";
 import { ProjectStore } from "../../src/projects";
@@ -176,7 +176,7 @@ describe("export → import on a clean device", () => {
     // one import record on A (its own, the latest), which keeps B's earlier record inside it
     const markers = journal.filter((e) => e.type === "project.imported");
     expect(markers.map((e) => (e.data as { mode: string }).mode)).toEqual(["replace"]);
-    expect((markers[0].data as { previous?: { mode: string } }).previous?.mode).toBe("add");
+    expect((markers[0].data as { previous?: { mode: string }[] }).previous?.[0].mode).toBe("add");
     expect((await a.memory.timeline(one.p.id)).length).toBeGreaterThan(0); // history shown after the replace
     // the same archive again: identical → default "skip"
     const again = await a.transfer.preview(back.bytes);
@@ -499,7 +499,7 @@ describe("crafted archives (independent review findings)", () => {
     const copyId = res.imported[0].id;
     const markers = (await a.base.journal()).filter((e) => e.projectId === copyId && e.type === "project.imported");
     expect(markers).toHaveLength(1);
-    expect(markers[0].data).toMatchObject({ mode: "copy", sourceProject: p.id, previous: { mode: "add", sourceProject: p.id } });
+    expect(markers[0].data).toMatchObject({ mode: "copy", sourceProject: p.id, previous: [{ mode: "add", sourceProject: p.id }] });
     expect((await a.memory.verify(copyId)).ok).toBe(true);
     expect((await a.memory.versions(copyId)).size).toBeGreaterThan(0);
     // and the copy exports and imports again
@@ -548,5 +548,39 @@ describe("crafted archives (independent review findings)", () => {
     // and the same import then succeeds
     await b.transfer.importArchive(pv);
     expect((await b.projects.list()).length).toBe(3);
+  });
+});
+
+describe("review 2 (AIW-04 part)", () => {
+  it("earlier import records stay a flat, bounded list over many export/import cycles", async () => {
+    const devs = [device(), device()];
+    const { p } = await rich(devs[0], "Plimbat");
+    let from = 0;
+    for (let i = 0; i < 24; i++) {
+      const to = 1 - from;
+      await devs[from].memory.create(p.id, { category: "step", title: `Pas ${i}` }); // worked on before moving it
+      const { bytes } = await devs[from].transfer.exportArchive([p.id]);
+      const pv = await devs[to].transfer.preview(bytes);
+      await devs[to].transfer.importArchive(pv, { [p.id]: pv.projects[0].choices.includes("replace") ? "replace" : "add" });
+      from = to;
+    }
+    const markers = (await devs[from].base.journal()).filter((e) => e.projectId === p.id && e.type === "project.imported");
+    const prev = (markers.at(-1)!.data as { previous: unknown[] }).previous;
+    expect(prev.length).toBe(20);
+    expect(prev.every((r) => !("previous" in (r as object)))).toBe(true);
+    expect((await devs[from].memory.verify(p.id)).ok).toBe(true);
+  }, 60_000);
+
+  it("the names shown in the preview follow the user's current choices", async () => {
+    const a = device();
+    await a.projects.create("X");
+    const one = await a.projects.create("Y");
+    const b = device();
+    await b.projects.create("X");
+    const pv = await b.transfer.preview((await a.transfer.exportArchive("all")).bytes);
+    const x = pv.projects.find((q) => q.name === "X")!;
+    expect(plannedNames(pv, {}).get(x.id)).toBe("X (2)");
+    expect(plannedNames(pv, { [x.id]: "skip" }).has(x.id)).toBe(false);
+    expect(plannedNames(pv, {}).get(one.id)).toBe("Y");
   });
 });

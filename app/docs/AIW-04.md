@@ -107,7 +107,7 @@ Jurnalul fiecărui dispozitiv e un lanț de amprente și nu poate primi evenimen
    - fiecare eveniment păstrează **data lui originală**, tipul, informația la care se referă și conținutul;
    - versiunile anterioare și istoricul legăturilor se văd la fel ca pe dispozitivul de origine;
    - lanțul dispozitivului rămâne valid.
-3. **Un import anterior:** dacă proiectul fusese importat înainte, marcajul acelui import (primul eveniment arhivat) **nu** se reia ca import al acestui dispozitiv. Se păstrează în câmpul `previous` al marcajului nou (lanțul de proveniență), iar marcajul acestui dispozitiv rămâne ultimul.
+3. **Un import anterior:** dacă proiectul fusese importat înainte, marcajul acelui import (primul eveniment arhivat) **nu** se reia ca import al acestui dispozitiv. Se păstrează în câmpul `previous` al marcajului nou, o listă simplă a importurilor anterioare (cele mai recente primele, cel mult 20), iar marcajul acestui dispozitiv rămâne ultimul.
 4. **Copia nouă:** toate id-urile (proiect, informații, legături) sunt înlocuite consecvent, inclusiv cele din istoric.
 5. **Numele ocupat:** la adăugare sau copie, dacă numele e deja folosit aici (sau de alt proiect din aceeași arhivă), proiectul primește un nume liber („X (2)”), afișat dinainte în previzualizare, plus un eveniment de redenumire.
 6. **Înlocuirea:**
@@ -166,6 +166,10 @@ Un agent separat, care nu a scris codul, a verificat AIW-04 și a rulat probe pr
 | 9 | fișierul era citit integral înainte de verificarea mărimii | mărimea verificată înainte; limite mai mici |
 | 11 | butoane alegere fără săgeți; fereastra rămânea deschisă după „s-a schimbat între timp”; export pornit de două ori | reparate |
 | 12 | lipseau teste pentru cazurile de mai sus și pentru o eroare **în timpul** scrierii | 9 teste noi, inclusiv „disc plin” simulat la mijlocul importului |
+
+**A doua verificare independentă** (după reparații) a confirmat că reparațiile țin. Pentru partea AIW-04 a mai găsit două lucruri mărunte, reparate:
+- lista importurilor anterioare creștea la fiecare reimport (acum e o listă simplă, de cel mult 20);
+- numele noi afișate în previzualizare nu urmau alegerile schimbate de utilizator (acum se recalculează).
 
 Rămase (documentate, nu reparate): **#10** importurile foarte mari (zeci de mii de evenimente) calculează amprentele cât timp țin blocată scrierea; durează, fără bară de progres. **#5 parțial:** după „Înlocuiește”, textele versiunii locale rămân în jurnalul intern (nevizibile) până la ștergerea definitivă a proiectului.
 

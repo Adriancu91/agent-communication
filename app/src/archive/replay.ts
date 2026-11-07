@@ -67,13 +67,21 @@ export function checkEventData(e: ArchivedEvent): void {
       needKeys(e, d, []);
       break;
     case "project.imported": {
-      // what an earlier import recorded; "previous" carries the record of the import before it (nested once per import)
+      // what an earlier import recorded; "previous" lists the imports before it
       const k = keys(d);
       if (k !== "app,archive,events,exportedAt,mode,name,sourceProject" && k !== "app,archive,events,exportedAt,mode,name,previous,sourceProject") bad(e, "fields");
       if (!["add", "copy", "replace"].includes(d.mode as string) || !validName(d.name) || !isStr(d.archive) || !HEX64.test(d.archive)) bad(e, "data");
       if (!isStr(d.exportedAt) || !ISO.test(d.exportedAt) || !isStr(d.app) || d.app.length > 60 || CONTROL.test(d.app)) bad(e, "data");
       if (!isStr(d.sourceProject) || !PROJECT_ID.test(d.sourceProject) || typeof d.events !== "number" || !Number.isInteger(d.events)) bad(e, "data");
-      if (d.previous !== undefined && (typeof d.previous !== "object" || d.previous === null || JSON.stringify(d.previous).length > 100_000)) bad(e, "data");
+      // earlier imports: a flat list, most recent first, at most 20, each with the same fields (no nesting)
+      if (d.previous !== undefined) {
+        if (!Array.isArray(d.previous) || d.previous.length === 0 || d.previous.length > 20) bad(e, "data");
+        for (const r of d.previous as unknown[]) {
+          if (typeof r !== "object" || r === null || Array.isArray(r)) bad(e, "data");
+          const o = r as Record<string, unknown>;
+          if (keys(o) !== "app,archive,events,exportedAt,mode,name,sourceProject" || !isStr(o.name) || !isStr(o.app) || !isStr(o.archive) || !isStr(o.mode) || !isStr(o.exportedAt) || !isStr(o.sourceProject) || typeof o.events !== "number") bad(e, "data");
+        }
+      }
       break;
     }
     case "memory.created": {
