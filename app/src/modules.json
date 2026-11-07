@@ -1,0 +1,12 @@
+{
+  "_info": "Allowed imports between the app's modules (AI_WORKSPACE_ARCHITECTURE.md §2). A module may import only itself and the modules listed here. Checked by tests/unit/boundaries.test.ts.",
+  "core": [],
+  "security": ["core"],
+  "storage": ["core"],
+  "projects": ["core", "storage"],
+  "memory": ["core", "storage"],
+  "continuity": ["core", "memory", "projects", "security"],
+  "archive": ["core", "storage", "security"],
+  "launcher": [],
+  "ui": ["core", "security", "storage", "projects", "memory", "continuity", "archive", "launcher"]
+}

@@ -1,0 +1,35 @@
+name: app
+# Tests for the AI Workspace app (app/). Read-only: no secrets, no publishing, no deployment.
+on:
+  pull_request:
+    paths: ["app/**", ".github/workflows/app.yml"]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Install (exact versions from package-lock.json, no install scripts)
+        run: npm ci --ignore-scripts
+      - name: Licenses
+        run: npm run licenses
+      - name: Types, build, unit tests
+        run: npm run typecheck && npm run build && npm test
+      - name: Browsers for the tests (iPhone engine + Chromium)
+        run: npx playwright install --with-deps chromium webkit
+      - name: Screen tests (iPhone, iPhone SE, Android, PC)
+        run: npx playwright test
