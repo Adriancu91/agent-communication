@@ -2,6 +2,14 @@
 
 Nicio versiune nu e publicată. Fiecare etapă e un PR separat, neîmbinat până la aprobarea lui Adrian.
 
+## AIW-05.1 — Flux aproape automat (PR separat, ciornă)
+- **„Trimite la AI” cu o atingere:**
+  - pe telefon, prin meniul de partajare, direct în aplicația ChatGPT / Claude / Gemini;
+  - pe calculator, un clic copiază pachetul și deschide site-ul AI.
+- **Răspunsul se aduce înapoi cu o atingere:** aplicația citește singură clipboardul. Pe Android, răspunsul poate fi partajat direct către AI Workspace.
+- **Analiza pornește singură.** „Acceptă tot ce e nou și salvează” rezolvă confirmarea dintr-o atingere.
+- **Corectură:** analiza așteaptă încărcarea memoriei, deci comparația și relațiile sunt mereu corecte.
+
 ## AIW-05 — Continuitate AI (PR separat, ciornă)
 - **Lansatorul** devine fluxul de lucru cu AI: proiect → asistent (ChatGPT, Claude, Gemini, alt AI) → sarcină → pachet de continuitate → copiere / descărcare → deschiderea site-ului AI într-o filă nouă.
 - **Pachetul de continuitate:** memoria oficială pe secțiuni, cu referințe scurte (D1, P2), instrucțiuni pentru AI, sarcina, opțional ultimele răspunsuri; limită de mărime; fără propuneri neconfirmate și fără contradicții.

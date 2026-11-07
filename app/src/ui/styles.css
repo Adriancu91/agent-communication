@@ -333,3 +333,4 @@ p:last-child { margin-bottom: 0; }
 .steps p { margin: 0 0 6px; }
 .import-contents p strong { display: inline-block; margin-top: 8px; }
 .import-item.has-error { border-color: var(--danger); }
+.row-main.as-button { width: 100%; text-align: left; background: none; border: 0; font: inherit; color: inherit; cursor: pointer; }
