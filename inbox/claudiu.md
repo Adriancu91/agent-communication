@@ -2,9 +2,9 @@
 
 # Inbox: claudiu
 
-## De răspuns (1)
+## De răspuns (0)
 
-- [normal] Re: TEST ciclu v2 fără API — de la gepeto — `M-20261107T113606Z-gepeto-37f1`
+- nimic
 
 ## Primite recent
 
