@@ -72,7 +72,7 @@ export class JournaledStore {
     try {
       return await fn(db.transaction(stores));
     } catch (e) {
-      throw toStorageError(e);
+      throw asStorageError(e);
     }
   }
 
@@ -130,7 +130,7 @@ export class JournaledStore {
         this.saveCheckpoint(events[events.length - 1]);
         return plan.result;
       } catch (e) {
-        throw toStorageError(e);
+        throw asStorageError(e);
       }
     });
     if (wrote) {
@@ -191,6 +191,17 @@ export class JournaledStore {
 }
 
 export { GENESIS };
+
+/**
+ * Browser errors become StorageErrors; the app's own errors (validation, link rules) pass through
+ * unchanged, so the interface can show the exact reason.
+ */
+function asStorageError(e: unknown): unknown {
+  if (e instanceof StorageError) return e;
+  if (typeof DOMException !== "undefined" && e instanceof DOMException) return toStorageError(e);
+  if (e instanceof Error && e.constructor !== Error && e.name !== "TypeError" && e.name !== "Error") return e; // our own error classes
+  return toStorageError(e);
+}
 
 /** Clears the content (names, texts) of past events found through an index, keeping their fingerprints. */
 export function eraseEventData(tx: IDBTransaction, index: "projectId" | "entityId", key: string): Promise<void> {
