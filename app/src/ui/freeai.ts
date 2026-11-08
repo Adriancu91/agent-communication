@@ -4,14 +4,14 @@
 // at a time, no retries in a loop, no way around its limits. Only https://text.pollinations.ai is allowed
 // (Content-Security-Policy in index.html). The messages (and the project memory, in the form chosen under
 // Saving) go to Pollinations when the user picks the free model or it takes over when Puter credit ends.
-import type { ChatMessage } from "../chat";
+import type { WireMessage } from "../chat";
 import { PuterError, type ChatResult } from "./puter";
 
 export const FREE_URL = "https://text.pollinations.ai/openai";
 const FREE_MODEL_ID = "openai-fast"; // the anonymous tier's model (GPT-OSS 20B)
 
 /** One call, streamed (Server-Sent Events): `onText` receives the answer so far. */
-export async function chatFree(messages: ChatMessage[], onText: (soFar: string) => void, signal?: AbortSignal): Promise<ChatResult> {
+export async function chatFree(messages: WireMessage[], onText: (soFar: string) => void, signal?: AbortSignal): Promise<ChatResult> {
   let res: Response;
   try {
     res = await fetch(FREE_URL, {

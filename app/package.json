@@ -15,6 +15,7 @@
     "preview": "vite preview --port 4173 --strictPort"
   },
   "dependencies": {
+    "pdfjs-dist": "^6.5.438",
     "preact": "11.2.0"
   },
   "devDependencies": {

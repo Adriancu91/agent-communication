@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ro">
+  <head>
+    <meta charset="utf-8" />
+    <!-- AIW-07: the code agent's preview. Opened ONLY inside <iframe sandbox="allow-scripts"> (no
+         allow-same-origin): it runs in an isolated origin, cannot read the app's data, open windows,
+         navigate the app or reach the network (connect-src 'none'). It receives one page of code from
+         the app, shows it, and reports errors back. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; worker-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Previzualizare</title>
+    <script>
+      (function () {
+        // Only ever inside a sandbox (opaque origin): opened any other way — directly, or framed by another
+        // site without a sandbox — this page does nothing, so code never runs with the app's origin.
+        if (self.origin !== "null") return;
+        var home = new URL(location.href).origin; // only the app itself may send code to run
+        var started = false;
+        function report(kind, msg) {
+          try { parent.postMessage({ type: "aiw-sandbox", kind: kind, msg: String(msg).slice(0, 2000) }, "*"); } catch (e) {}
+        }
+        // reporting is set up again inside the page that is written (document.open clears these handlers)
+        var PRELUDE =
+          "<script>(function(){function r(k,m){try{parent.postMessage({type:'aiw-sandbox',kind:k,msg:String(m).slice(0,2000)},'*')}catch(e){}}" +
+          "window.addEventListener('error',function(e){r('error',(e.message||'Error')+(e.lineno?' (linia '+e.lineno+')':''))});" +
+          "window.addEventListener('unhandledrejection',function(e){r('error',e.reason&&e.reason.message||e.reason)});" +
+          "var ce=console.error;console.error=function(){r('error',[].slice.call(arguments).join(' '));return ce.apply(console,arguments)};" +
+          "window.addEventListener('load',function(){r('loaded','')});})();<\/script>";
+        window.addEventListener("message", function (e) {
+          if (started || e.source !== parent || e.origin !== home || !e.data || e.data.type !== "aiw-run" || typeof e.data.html !== "string") return;
+          started = true;
+          document.open();
+          document.write(PRELUDE + e.data.html);
+          document.close();
+        });
+        report("ready", "");
+      })();
+    </script>
+  </head>
+  <body></body>
+</html>

@@ -22,6 +22,7 @@ const BUILT_IN: Record<PackLang, PromptTemplate[]> = {
     { id: "simple", icon: "☺", label: "Explică simplu", text: "Explică-mi starea proiectului pe înțelesul unui începător, fără jargon." },
     { id: "report", icon: "✉", label: "Raport", text: "Scrie un raport scurt de progres pe care îl pot trimite altcuiva (fără detalii interne inutile)." },
     { id: "extract", icon: "⇣", label: "Extrage din text", text: "Extrage din textul de mai jos deciziile, pașii, problemele și informațiile importante, ca propuneri pentru memorie:\n\n", open: true },
+    { id: "app", icon: "⌘", label: "Fă o aplicație", text: "Construiește o aplicație mică într-un singur fișier HTML (HTML, CSS și JavaScript în același fișier, fără biblioteci sau resurse de pe internet), pe care o pot rula direct. Pune tot codul într-un singur bloc ```html. Aplicația: ", open: true },
   ],
   en: [
     { id: "summary", icon: "◎", label: "Summary", text: "Give a short summary of the project: where we are, what was decided and what is still open." },
@@ -32,6 +33,7 @@ const BUILT_IN: Record<PackLang, PromptTemplate[]> = {
     { id: "simple", icon: "☺", label: "Explain simply", text: "Explain the state of the project to me as to a beginner, without jargon." },
     { id: "report", icon: "✉", label: "Report", text: "Write a short progress report I can send to someone else (no unnecessary internal detail)." },
     { id: "extract", icon: "⇣", label: "Extract from text", text: "Extract the decisions, steps, problems and important facts from the text below, as memory proposals:\n\n", open: true },
+    { id: "app", icon: "⌘", label: "Make an app", text: "Build a small app in one HTML file (HTML, CSS and JavaScript in the same file, no libraries or resources from the internet) that I can run directly. Put all the code in one ```html block. The app: ", open: true },
   ],
 };
 

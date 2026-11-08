@@ -2,6 +2,15 @@
 
 Nicio versiune nu e publicată. Fiecare etapă e un PR separat, neîmbinat până la aprobarea lui Adrian.
 
+## AIW-07 — Poze și fișiere, voce, consiliul de modele, agentul de cod (PR separat, ciornă)
+- **📎 Poze, PDF, .docx și text în chat**, citite pe dispozitiv; PDF-urile scanate pleacă la model ca imagini.
+- **🎤 Dictare, 🔊 citire cu voce tare și 🎙 conversație cu voce** (mâini libere).
+- **⚖ Consiliul de modele:** aceeași întrebare la 2–3 modele, iar un judecător compară răspunsurile.
+- **Agentul de cod:** răspunsuri formatate; codul HTML/JS rulează într-o previzualizare izolată, cu „repară erorile” și „descarcă”.
+- **Tehnic:**
+  - pdf.js 6.5.438 (Apache-2.0);
+  - CSP `frame-src 'self'`, doar pentru previzualizarea izolată.
+
 ## AIW-06.1 — Import din cont, modul gratuit, reparații după testul pe iPhone (PR separat, ciornă)
 - **Tabul Lansator devine Import:** conversațiile exportate din contul tău de ChatGPT sau Claude devin chaturi ale proiectului, pe care le continui în Chat. Fișierul e citit doar pe dispozitiv.
 - **Modul gratuit:** GPT-OSS 20B prin serviciul public Pollinations, fără cont și fără cheie; comutare automată când se termină creditul Puter (cu acordul cerut o dată).

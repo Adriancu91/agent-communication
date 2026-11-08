@@ -45,9 +45,13 @@ describe.runIf(built)("built app (run `npm run build` first)", () => {
       if (a !== "./") expect(existsSync(join(DIST, a)), a).toBe(true);
     }
     const files = all(DIST).map((p) => "./" + p.slice(DIST.length + 1)).filter((p) => p !== "./sw.js" && p !== "./index.html");
-    // AIW-06: only the chat's Puter.js is left out (loaded when the chat opens; the chat needs internet anyway)
-    for (const f of files) if (f !== "./vendor/puter.js") expect(list, f).toContain(f);
+    // AIW-06: the chat's Puter.js is left out (loaded when the chat opens; the chat needs internet anyway);
+    // AIW-07: so is pdf.js (worker and decoders), loaded only to read an attached PDF — the new version of
+    // the app installs as quickly as before
+    const lazy = (f: string) => f === "./vendor/puter.js" || f.startsWith("./pdfjs/") || /^\.\/assets\/pdf(\.worker\.min)?-[\w-]+\.m?js$/.test(f);
+    for (const f of files) if (!lazy(f)) expect(list, f).toContain(f);
     expect(list).not.toContain("./vendor/puter.js");
+    expect(list.filter((f: string) => lazy(f))).toEqual([]);
   });
 
   it("ships the license notice of every bundled library (licenses.txt)", () => {
@@ -67,6 +71,12 @@ describe.runIf(built)("built app (run `npm run build` first)", () => {
         free++;
         expect(code.match(/https?:\/\/[a-z0-9.-]+/gi)?.filter((u) => u !== "https://text.pollinations.ai"), f).toEqual([]);
         expect(code, f).not.toMatch(/XMLHttpRequest|WebSocket|sendBeacon|EventSource|RTCPeerConnection|importScripts/);
+        continue;
+      }
+      // AIW-07: pdf.js (loaded only to read an attached PDF) contains code that can load a PDF from a URL;
+      // the app always hands it the file's bytes (src/ui/files.ts: getDocument({ data })), never an address
+      if (/(^|\/)pdf(\.worker\.min)?-[\w-]+\.m?js$/.test(f)) {
+        expect(code, f).not.toMatch(/https?:\/\/(?!www\.w3\.org|example\.com|foo\.bar|ns\.adobe\.com|purl\.org|iptc\.org)[a-z0-9.-]+\.[a-z]{2,}\//i);
         continue;
       }
       expect(code, f).not.toMatch(/\bfetch\(|XMLHttpRequest|WebSocket|sendBeacon|EventSource|RTCPeerConnection|importScripts/);

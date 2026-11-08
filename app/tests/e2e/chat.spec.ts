@@ -1,5 +1,6 @@
 // AIW-06 in the browser: the in-app chat, with a SIMULATED Puter (no real account, no network call).
 // The app's vendor/puter.js is replaced by a small fake that records every call and answers from a queue.
+import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { addEntry, newProject, openMemory, seedProposal, setRo } from "./helpers";
 
@@ -341,4 +342,160 @@ test("a form never closes on a tap outside it (typed text is kept)", async ({ pa
   await page.mouse.click(5, 5);
   await expect(sheet).toBeVisible();
   await expect(sheet.locator('input[name="prompt-label"]')).toHaveValue("Text nesalvat");
+});
+
+// ---------- AIW-07: files and voice ----------
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC", "base64");
+
+test("photo, PDF and .docx are read on the device and go with the question; the photo as a picture", async ({ page }) => {
+  const pid = await project(page);
+  await openChat(page, pid);
+  await page.locator('input[name="attach"]').setInputFiles([
+    { name: "lot.png", mimeType: "image/png", buffer: PNG },
+    { name: "oferta.pdf", mimeType: "application/pdf", buffer: readFileSync("tests/fixtures/oferta.pdf") },
+    { name: "contract.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: readFileSync("tests/fixtures/contract.docx") },
+  ]);
+  await expect(page.locator("[data-file]")).toHaveCount(3);
+  await queue(page, "Am văzut poza, oferta și contractul.");
+  await send(page, "Ce vezi?");
+  await expect(page.locator('[data-msg="reply"] .bubble')).toHaveText("Am văzut poza, oferta și contractul.");
+  const last = (await calls(page))[0].messages.at(-1)! as unknown as { role: string; content: { type: string; text?: string; image_url?: { url: string } }[] };
+  expect(last.role).toBe("user");
+  const text = last.content.find((p) => p.type === "text")!.text!;
+  expect(text).toContain("Ce vezi?");
+  expect(text).toContain("Oferta DEEE pagina unu: pret 4.2 lei pe kg");
+  expect(text).toContain("Pagina doi: termen 15 decembrie");
+  expect(text).toContain("Contract de colectare\nCantitate: 2 tone");
+  expect(text).toContain("[poză atașată: lot.png]");
+  const pics = last.content.filter((p) => p.type === "image_url");
+  expect(pics).toHaveLength(1);
+  expect(pics[0].image_url!.url).toMatch(/^data:image\/jpeg;base64,/);
+  // saved: the question with the files' text (folded), the photo only by name; the box is empty again
+  await expect(page.locator("[data-file]")).toHaveCount(0);
+  await expect(page.locator('[data-msg="ask"] .ask-files summary')).toContainText("oferta.pdf");
+  await page.reload();
+  await expect(page.locator('[data-msg="ask"] .ask-files summary')).toContainText("contract.docx");
+});
+
+test("a model that cannot see pictures is not sent a photo", async ({ page }) => {
+  const pid = await project(page);
+  await openChat(page, pid);
+  await page.locator('[data-action="model"]').click();
+  await page.locator('[data-model-id="deepseek-v4.1-flash"]').click();
+  await expect(page.locator("dialog[open]")).toHaveCount(0);
+  await page.locator('input[name="attach"]').setInputFiles({ name: "lot.png", mimeType: "image/png", buffer: PNG });
+  await page.locator('[data-action="send"]').click();
+  await expect(page.locator(".toast")).toContainText("nu poate vedea poze");
+  expect(await calls(page)).toHaveLength(0);
+});
+
+test("voice: dictation fills the box; the hands-free conversation sends at the pause and reads the answer", async ({ page }) => {
+  await page.addInitScript(() => {
+    const w = window as unknown as Record<string, unknown>;
+    w.__spoken = [];
+    class FakeRecognition {
+      lang = ""; continuous = false; interimResults = false; maxAlternatives = 1;
+      onresult: ((e: unknown) => void) | null = null; onerror: ((e: unknown) => void) | null = null; onend: (() => void) | null = null;
+      start() {
+        const said = (w.__say as string[]).shift() ?? "";
+        setTimeout(() => {
+          if (said) this.onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: said } }] });
+          else this.onerror?.({ error: "no-speech" });
+          this.onend?.();
+        }, 30);
+      }
+      stop() {} abort() {}
+    }
+    w.__say = ["Care e prețul?", "Mulțumesc"];
+    for (const k of ["SpeechRecognition", "webkitSpeechRecognition"]) Object.defineProperty(window, k, { value: FakeRecognition, configurable: true, writable: true });
+    const synth = { speak: (u: { text: string; onend?: () => void }) => { (w.__spoken as string[]).push(u.text); setTimeout(() => u.onend?.(), 10); }, cancel() {}, getVoices: () => [] };
+    Object.defineProperty(window, "speechSynthesis", { value: synth, configurable: true });
+    w.SpeechSynthesisUtterance = class { text: string; lang = ""; voice = null; rate = 1; onend: (() => void) | null = null; onerror = null; constructor(t: string) { this.text = t; } };
+  });
+  const pid = await project(page);
+  await openChat(page, pid);
+  // dictation only fills the box
+  await page.locator('[data-action="mic"]').click();
+  await expect(page.locator("#chat-input")).toHaveValue("Care e prețul?");
+  expect(await calls(page)).toHaveLength(0);
+  await page.locator("#chat-input").fill("");
+  // hands-free: listen → send → read the answer → listen again
+  await page.evaluate(() => ((window as unknown as { __say: string[] }).__say = ["Care e prețul?", ""]));
+  await queue(page, "Prețul e **4,2 lei/kg**.");
+  await page.locator('[data-action="hands-free"]').click();
+  await expect(page.locator('[data-msg="reply"] .bubble')).toHaveText("Prețul e 4,2 lei/kg.");
+  await expect(page.locator('[data-msg="reply"] .bubble strong')).toHaveText("4,2 lei/kg"); // formatted, not raw
+  // (a silent " " is spoken first, from the tap: it lets an iPhone read aloud later)
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __spoken: string[] }).__spoken.filter((x) => x.trim()))).toEqual(["Prețul e 4,2 lei/kg."]);
+  // the second listening heard nothing: the conversation stops by itself
+  await expect(page.locator('[data-action="hands-free"]')).toHaveAttribute("aria-pressed", "false");
+  expect((await calls(page)).map((c) => c.messages.at(-1)!.content)).toEqual(["Care e prețul?"]);
+});
+
+test("council: the same question to two models, then the judge compares; one answer saved with all three parts", async ({ page }) => {
+  const pid = await project(page);
+  await openChat(page, pid);
+  await page.locator('[data-action="council-sheet"]').click();
+  const sheet = page.locator("#council-sheet");
+  // default: three members; keep two
+  await sheet.locator('[data-member="claude-haiku-5-5"]').click();
+  await sheet.locator('[data-action="council-on"]').click();
+  await expect(page.locator('[data-action="council"]')).toContainText("2 modele");
+  await queue(page, "Prețul e bun.", "Prețul e prea mic.", "Sunt în dezacord: unul spune bun, altul mic. Concluzie: negociază.");
+  await send(page, "E bun prețul de 4,2 lei/kg?");
+  const reply = page.locator('[data-msg="reply"] .bubble');
+  await expect(reply.locator("h4")).toHaveText(["Gemini 2.5 Flash-Lite", "GPT-5 nano", "Concluzia · Gemini 2.5 Flash-Lite"]);
+  await expect(reply).toContainText("Prețul e bun.");
+  await expect(reply).toContainText("Prețul e prea mic.");
+  await expect(reply).toContainText("Concluzia · Gemini 2.5 Flash-Lite");
+  await expect(reply).toContainText("Concluzie: negociază.");
+  const c = await calls(page);
+  expect(c.map((x) => x.options.model)).toEqual(["gemini-2.5-flash-lite", "gpt-5-nano", "gemini-2.5-flash-lite"]);
+  expect(c[0].messages[0].content).toContain("Nu adăuga bloc de propuneri.");
+  const judge = c[2].messages.at(-1)!.content;
+  expect(judge).toContain("E bun prețul de 4,2 lei/kg?");
+  expect(judge).toContain("### GPT-5 nano\nPrețul e prea mic.");
+  // saved as one chat of the council
+  await page.locator('[data-action="history"]').click();
+  await expect(page.locator("[data-chat-item]").first()).toContainText("⚖");
+});
+
+test("code agent: a page from the answer runs isolated; its errors can be sent back to be fixed", async ({ page }) => {
+  const pid = await project(page);
+  await openChat(page, pid);
+  const app = [
+    "Iată aplicația:",
+    "",
+    "```html",
+    "<!doctype html><html><body><h1 id='t'>Calculator DEEE</h1>",
+    "<script>",
+    "document.getElementById('t').textContent += ' gata';",
+    "try { indexedDB.open('aiw'); document.body.append(' DB-DESCHIS'); } catch (e) { document.body.append(' DB-BLOCAT'); }",
+    "fetch('https://example.com/x').then(() => document.body.append(' NET-DESCHIS'), () => document.body.append(' NET-BLOCAT'));",
+    "nuExista();",
+    "</script></body></html>",
+    "```",
+  ].join("\n");
+  await queue(page, app);
+  await page.locator('[data-prompt="app"]').click();
+  await expect(page.locator("#chat-input")).toHaveValue(/singur fișier HTML/);
+  await page.locator("#chat-input").fill("Fă un calculator.");
+  await page.locator('[data-action="send"]').click();
+  await page.locator('[data-action="run-code"]').click();
+  const frame = page.frameLocator("#code-preview iframe");
+  await expect(frame.locator("#t")).toHaveText("Calculator DEEE gata");
+  // isolated: no access to the app's database, no network
+  await expect(frame.locator("body")).toContainText("DB-BLOCAT");
+  await expect(frame.locator("body")).toContainText("NET-BLOCAT");
+  // WebKit hides the details of errors in an isolated page ("Script error."): an error is reported either way
+  await expect(page.locator("[data-preview-errors]")).toContainText(/nuExista|Script error/);
+  await page.locator('[data-action="fix-code"]').click();
+  await expect(page.locator("#chat-input")).toHaveValue(/(nuExista|Script error)[\s\S]*Repară-l/);
+});
+
+test("the preview page does nothing when opened outside its sandbox", async ({ page }) => {
+  await page.goto("./sandbox.html");
+  await page.evaluate(() => window.postMessage({ type: "aiw-run", html: "<p id='x'>RULAT</p>" }, "*"));
+  await page.waitForTimeout(200);
+  await expect(page.locator("#x")).toHaveCount(0);
 });
