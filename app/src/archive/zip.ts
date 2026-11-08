@@ -202,8 +202,8 @@ export async function createZip(files: ZipInput[], when = new Date()): Promise<U
 
 // ---------- reader ----------
 
-/** Reads every file of a ZIP into memory, checking sizes, names and CRCs. */
-export async function readZip(bytes: Uint8Array, limits: ZipLimits = DEFAULT_LIMITS): Promise<Map<string, Uint8Array>> {
+/** Reads every file of a ZIP (or only those `only` accepts) into memory, checking sizes, names and CRCs. */
+export async function readZip(bytes: Uint8Array, limits: ZipLimits = DEFAULT_LIMITS, only?: (name: string) => boolean): Promise<Map<string, Uint8Array>> {
   if (bytes.length < 22) throw new ZipError(bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b ? "truncated" : "notZip");
   if (!(bytes[0] === 0x50 && bytes[1] === 0x4b)) throw new ZipError("notZip");
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -249,6 +249,8 @@ export async function readZip(bytes: Uint8Array, limits: ZipLimits = DEFAULT_LIM
       throw new ZipError("badName");
     }
     p += 46 + nlen + xlen + clen;
+    // AIW-06.1: reading one file out of a large export (other files are neither checked nor unpacked)
+    if (only && !only(name)) continue;
 
     if (flags & 0x0001) throw new ZipError("encrypted", name);
     // known option bits only: deflate level (1-2), data descriptor (3), UTF-8 names (11)

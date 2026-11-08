@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, expect, test, type BrowserContext, type Page } from "@playwright/test";
 
-const ROUTES = ["proiecte", "memorie", "continuitate", "lansator", "setari"];
+// AIW-06.1 (Adrian): the Launcher tab became Import (the launcher page itself is checked in shell.spec)
+const ROUTES = ["proiecte", "memorie", "continuitate", "import", "setari"];
 const DIST = resolve(new URL(".", import.meta.url).pathname, "../../dist");
 
 function startServer(port: number): ChildProcess {

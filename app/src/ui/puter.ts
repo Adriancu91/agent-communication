@@ -57,7 +57,7 @@ export function loadPuter(): Promise<PuterGlobal> {
   return loading;
 }
 
-export type PuterProblem = "load" | "signin" | "popup" | "cancelled" | "account" | "funds" | "busy" | "network" | "model" | "aborted" | "empty" | "unknown";
+export type PuterProblem = "load" | "signin" | "popup" | "cancelled" | "account" | "funds" | "busy" | "freeLimit" | "network" | "model" | "aborted" | "empty" | "unknown";
 
 export class PuterError extends Error {
   constructor(public problem: PuterProblem, detail = "") {

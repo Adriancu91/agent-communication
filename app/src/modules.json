@@ -8,6 +8,7 @@
   "continuity": ["core", "storage", "memory", "projects", "security"],
   "archive": ["core", "storage", "security"],
   "chat": ["core", "memory", "continuity"],
+  "importer": ["core"],
   "launcher": [],
-  "ui": ["core", "security", "storage", "projects", "memory", "continuity", "archive", "launcher", "chat"]
+  "ui": ["core", "security", "storage", "projects", "memory", "continuity", "archive", "launcher", "chat", "importer"]
 }

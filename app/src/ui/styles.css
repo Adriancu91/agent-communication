@@ -530,3 +530,24 @@ button.pill { cursor: pointer; font: inherit; font-size: 13px; font-weight: 600;
 .msg-meta { align-items: center; }
 .pill.small { min-height: var(--tap); padding: 0 12px; font-size: 12px; }
 .thread { padding-bottom: 8px; }
+
+/* AIW-06.1: long titles never get cut on a phone; the button goes under the title when there is no room */
+.large-title { font-size: clamp(28px, 8.4vw, 34px); overflow-wrap: anywhere; }
+.title-row { flex-wrap: wrap; }
+.title-row .large-title { flex: 1 1 auto; }
+.connect-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; position: relative; z-index: 1; }
+.connect-card .connect-actions .button { margin-top: 0; }
+.connect-card .button.ghost { background: transparent; color: #fff; border: 1.5px solid rgba(255, 255, 255, 0.75); box-shadow: none; }
+.estimate.card { margin: 0 0 12px; padding: 10px 12px; font-size: 13px; }
+.composer { padding-bottom: 10px; }
+/* AIW-06.1: import */
+.import .card { margin-bottom: 12px; }
+.howto { margin: 6px 0; }
+.howto summary { cursor: pointer; font-weight: 600; min-height: var(--tap); display: flex; align-items: center; }
+.howto p { margin: 0 0 8px; font-size: 15px; }
+.file-button { display: inline-flex; align-items: center; justify-content: center; cursor: pointer; margin: 8px 0; }
+.import-tools { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+.conv-list { max-height: 60vh; overflow-y: auto; }
+.row-main.conv { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
+.row-main.conv input { width: 22px; height: 22px; margin-top: 2px; flex: none; accent-color: var(--accent); }
+.row-main.conv > span { display: flex; flex-direction: column; min-width: 0; }

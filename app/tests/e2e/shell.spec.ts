@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { expect, test, type Page } from "@playwright/test";
 
-const ROUTES = ["proiecte", "memorie", "continuitate", "lansator", "setari"] as const;
+// AIW-06.1 (Adrian): the Launcher tab became Import; the launcher page is still checked (PAGES), reached from Continuity
+const ROUTES = ["proiecte", "memorie", "continuitate", "import", "setari"] as const;
+const PAGES = [...ROUTES, "lansator"] as const;
 
 /** Records every request that leaves the app's own origin, and every page error. */
 function watch(page: Page) {
@@ -29,14 +31,14 @@ test("every screen opens, without errors and without leaving the device", async 
     await expect(page.locator("h1")).toBeVisible();
   }
   await page.goBack();
-  await expect(page).toHaveURL(/#\/lansator$/);
+  await expect(page).toHaveURL(/#\/import$/);
   expect(w.external).toEqual([]);
   expect(w.errors).toEqual([]);
 });
 
 test("fits the screen: no sideways scrolling, touch targets at least 44 px", async ({ page }, info) => {
   await page.goto("./#/setari");
-  for (const r of ROUTES) {
+  for (const r of PAGES) {
     await page.goto(`./#/${r}`);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     expect(overflow, r).toBeLessThanOrEqual(0);

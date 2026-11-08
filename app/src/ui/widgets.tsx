@@ -2,7 +2,7 @@
 import type { ComponentChildren, JSX } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 
-export function Dialog(props: { title: string; onClose: () => void; children: ComponentChildren; id?: string }): JSX.Element {
+export function Dialog(props: { title: string; onClose: () => void; children: ComponentChildren; id?: string; dismissable?: boolean }): JSX.Element {
   const ref = useRef<HTMLDialogElement>(null);
   // the control that opened the dialog, captured before any field inside takes the focus
   const [opener] = useState(() => (typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null));
@@ -14,8 +14,25 @@ export function Dialog(props: { title: string; onClose: () => void; children: Co
       props.onClose();
     };
     d.addEventListener("cancel", cancel);
+    // read-only sheets (dismissable) close on a tap on the dimmed area outside them, like Escape.
+    // The press must start AND end outside: selecting text and releasing outside never closes a sheet.
+    const isOut = (e: MouseEvent | PointerEvent) => {
+      if (e.target !== d) return false;
+      const r = d.getBoundingClientRect();
+      return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+    };
+    let startedOut = false;
+    const down = (e: PointerEvent) => void (startedOut = isOut(e));
+    const outside = (e: MouseEvent) => {
+      if (props.dismissable && startedOut && isOut(e)) props.onClose();
+      startedOut = false;
+    };
+    d.addEventListener("pointerdown", down);
+    d.addEventListener("click", outside);
     return () => {
       d.removeEventListener("cancel", cancel);
+      d.removeEventListener("pointerdown", down);
+      d.removeEventListener("click", outside);
       if (d.open) d.close();
       // keyboard users continue where they were: focus goes back to the control that opened the dialog
       if (opener && opener.isConnected && document.activeElement !== opener) opener.focus({ preventScroll: true });

@@ -85,9 +85,10 @@ test("connect once, ask, the answer streams in and is saved with the question", 
   await openChat(page, pid);
   await expect(page.locator('[data-action="account"]')).toContainText("adrian");
   await expect(page.locator("[data-empty-chat]")).toContainText("Oferta Brăila");
-  // the estimate is shown before sending; compact memory is cheaper than the full package
+  // the saving is shown before sending (AIW-06.1: on the Saving button, details in its sheet, not over the box)
   await page.locator("#chat-input").fill("Unde suntem?");
-  await expect(page.locator("[data-saved]")).toBeVisible();
+  await expect(page.locator('[data-action="economy"]')).toContainText(/−\d+%/);
+  await expect(page.locator(".composer [data-estimate]")).toHaveCount(0);
 
   await queue(page, "Suntem la etapa de ofertă. Prețul rămâne 4,2 lei/kg.");
   await page.locator('[data-action="send"]').click();
@@ -187,6 +188,10 @@ test("saving presets change what is sent; another model continues the same conve
 test("an error is explained and the question can be retried without being saved twice", async ({ page }) => {
   const pid = await project(page);
   await openChat(page, pid);
+  // AIW-06.1: with the automatic switch to the free model off, the credit error is explained here
+  await page.locator('[data-action="model"]').click();
+  await page.locator('#model-sheet input[name="auto-free"]').uncheck();
+  await page.keyboard.press("Escape");
   await queue(page, { error: { status: 402, message: "insufficient funds" } }, "Acum merge.");
   await send(page, "Test");
   await expect(page.locator("[data-failure]")).toContainText("Creditul din contul Puter s-a terminat");
@@ -289,4 +294,51 @@ test("an outside reply shared to the app is never offered to an in-app chat", as
   await page.goto("./?aiw_text=" + encodeURIComponent("Răspuns din altă aplicație") + "#/primire");
   await expect(page.locator("[data-received]")).toBeVisible();
   await expect(page.locator("[data-receive-session]")).toHaveCount(0);
+});
+
+test("Puter credit runs out: after one consent, the same question continues on the free model", async ({ page, context }) => {
+  const free: { messages: { role: string; content: string }[] }[] = [];
+  await context.route("https://text.pollinations.ai/openai", async (r) => {
+    free.push(JSON.parse(r.request().postData()!));
+    const body = ["Răspuns ", "gratuit."].map((t) => `data: ${JSON.stringify({ choices: [{ delta: { content: t } }] })}\n\n`).join("") + "data: [DONE]\n\n";
+    await r.fulfill({ status: 200, headers: { "content-type": "text/event-stream" }, body });
+  });
+  const pid = await project(page);
+  await openChat(page, pid);
+  await queue(page, { error: { status: 402, message: "insufficient funds" } });
+  await send(page, "Ce urmează?");
+  // the first time, the user is asked before anything goes to the free service
+  await expect(page.locator("#free-consent")).toContainText("Pollinations");
+  expect(free).toHaveLength(0);
+  await page.locator('[data-action="consent-free"]').click();
+  await expect(page.locator('[data-msg="reply"] .bubble')).toHaveText("Răspuns gratuit.");
+  await expect(page.locator('[data-action="model"]')).toHaveAttribute("data-model", "free:gpt-oss-20b");
+  await expect(page.locator("[data-failure]")).toHaveCount(0);
+  // the question goes once (not twice) to the free model
+  expect(free[0].messages.filter((m) => m.role === "user").map((m) => m.content)).toEqual(["Ce urmează?"]);
+});
+
+test("the account sheet closes with its button and by tapping outside", async ({ page }) => {
+  const pid = await project(page);
+  await openChat(page, pid);
+  await page.locator('[data-action="account"]').click();
+  await expect(page.locator("#chat-account")).toBeVisible();
+  await expect(page.locator("#chat-account")).not.toContainText("Deschide Puter");
+  await page.locator('#chat-account [data-action="close-sheet"]').click();
+  await expect(page.locator("#chat-account")).toHaveCount(0);
+  await page.locator('[data-action="account"]').click();
+  await expect(page.locator("#chat-account")).toBeVisible();
+  await page.mouse.click(5, 5); // outside the sheet
+  await expect(page.locator("#chat-account")).toHaveCount(0);
+});
+
+test("a form never closes on a tap outside it (typed text is kept)", async ({ page }) => {
+  const pid = await project(page);
+  await openChat(page, pid);
+  await page.locator('[data-action="prompts"]').click();
+  const sheet = page.locator("#prompts-sheet");
+  await sheet.locator('input[name="prompt-label"]').fill("Text nesalvat");
+  await page.mouse.click(5, 5);
+  await expect(sheet).toBeVisible();
+  await expect(sheet.locator('input[name="prompt-label"]')).toHaveValue("Text nesalvat");
 });

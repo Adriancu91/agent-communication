@@ -4,23 +4,25 @@ import type { ComponentChildren, JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { useClosedByNewerVersion, useStorageInfo } from "./data";
 import { setLang, useI18n, type Key, type Lang } from "./i18n";
-import { IconChat, IconContinuity, IconLauncher, IconMemory, IconProjects, IconSettings } from "./icons";
+import { IconChat, IconContinuity, IconImport, IconMemory, IconProjects, IconSettings } from "./icons";
 import { isStandalone, useOfflineState } from "./offline";
 import { BackupCard } from "./backup";
 import { ChatScreen } from "./chat";
+import { ImportScreen } from "./import";
 import { ContinuityScreen, Launcher, ReceiveScreen, SessionPage } from "./continuity";
 import { ContextPreview, EntryPage, MemoryHistory, MemoryTab, ProjectMemory } from "./memory";
 import { ProjectPage, ProjectsScreen, TrashScreen } from "./projects";
 import { ToastHost } from "./widgets";
 
-type Route = "chat" | "proiecte" | "memorie" | "continuitate" | "lansator" | "setari";
+type Route = "chat" | "proiecte" | "memorie" | "continuitate" | "import" | "lansator" | "setari";
 
 const TABS: { route: Route; label: Key; Icon: () => JSX.Element }[] = [
   { route: "chat", label: "tabChat", Icon: IconChat },
   { route: "proiecte", label: "tabProjects", Icon: IconProjects },
   { route: "memorie", label: "tabMemory", Icon: IconMemory },
   { route: "continuitate", label: "tabContinuity", Icon: IconContinuity },
-  { route: "lansator", label: "tabLauncher", Icon: IconLauncher },
+  // AIW-06.1 (Adrian): the Launcher tab became Import; the launcher stays reachable from Continuity
+  { route: "import", label: "tabImport", Icon: IconImport },
   { route: "setari", label: "tabSettings", Icon: IconSettings },
 ];
 
@@ -52,6 +54,7 @@ function readRoute(): Location {
   if (ses) return { route: "continuitate", view: "session", id: decodeURIComponent(ses[1]) };
   const lau = /^lansator\/([^/]+)(?:\/([^/]+))?$/.exec(r);
   if (lau) return { route: "lansator", view: "launch", id: decodeURIComponent(lau[1]), entry: lau[2] ? decodeURIComponent(lau[2]) : undefined };
+  if (r === "lansator") return { route: "lansator", view: "tab" };
   const m = /^proiect\/([^/]+)$/.exec(r);
   if (m) return { route: "proiecte", view: "project", id: decodeURIComponent(m[1]) };
   if (r === "cos") return { route: "proiecte", view: "trash" };
@@ -115,6 +118,7 @@ export function App(): JSX.Element {
         {loc.view === "receive" && <ReceiveScreen />}
         {loc.view === "chat" && <ChatScreen projectId={loc.id} sessionId={loc.entry} key={loc.id ?? ""} />}
         {route === "lansator" && <Launcher projectId={loc.id} continues={loc.entry} key={`${loc.id}|${loc.entry}`} />}
+        {route === "import" && <ImportScreen />}
         {route === "setari" && <Settings />}
       </main>
       <ToastHost />
