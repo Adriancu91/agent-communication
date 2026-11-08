@@ -5,7 +5,7 @@
 // A file that passes was produced by the app's own operations, or is indistinguishable from one.
 import {
   charCount, checkDescription, checkEntry, checkName, cleanBody, cleanDescription, cleanName, cleanTitle, isCategory, isEntryId,
-  isLinkType, isOfficial, REASON_MAX, SOURCE_MAX, UNSAFE_CHARS, isSessionId, isExchangeId, isProvider, cleanText, EXCHANGE_MAX, TASK_MAX, PROVIDER_NAME_MAX,
+  isLinkType, isOfficial, REASON_MAX, SOURCE_MAX, UNSAFE_CHARS, isSessionId, isExchangeId, isProvider, namedProvider, cleanText, EXCHANGE_MAX, TASK_MAX, PROVIDER_NAME_MAX,
   type EventType, type MemoryEntry, type MemoryLink, type Project,
 } from "../core";
 import { ArchiveError, type ArchivedEvent, type ProjectFile } from "./archive";
@@ -72,16 +72,16 @@ export function checkEventData(e: ArchivedEvent): void {
     case "session.created":
       needKeys(e, d, ["provider", "providerName", "task", "continues"]);
       if (!isProvider(d.provider) || !isStr(d.providerName) || charCount(d.providerName) > PROVIDER_NAME_MAX || CONTROL.test(d.providerName)) bad(e, "data");
-      if ((d.provider === "other") !== (d.providerName !== "") || !isStr(d.task) || cleanText(d.task) !== d.task || charCount(d.task) > TASK_MAX) bad(e, "data");
+      if (namedProvider(d.provider as string) !== (d.providerName !== "") || (d.provider === "inapp" && d.task !== "") || !isStr(d.task) || cleanText(d.task) !== d.task || charCount(d.task) > TASK_MAX) bad(e, "data");
       if (d.continues !== null && !isSessionId(d.continues)) bad(e, "data");
       break;
     case "session.exchange": {
       needKeys(e, d, ["session", "kind", "text", "pack", "proposals"]);
-      if (!isSessionId(d.session) || !["sent", "reply", "note"].includes(d.kind as string)) bad(e, "data");
+      if (!isSessionId(d.session) || !["sent", "reply", "note", "ask"].includes(d.kind as string)) bad(e, "data");
       if (!isStr(d.text) || cleanText(d.text) !== d.text || charCount(d.text) > EXCHANGE_MAX || (d.kind === "sent") !== (d.text === "")) bad(e, "data");
       if (!Array.isArray(d.proposals) || !d.proposals.every(isEntryId) || (d.kind !== "reply" && d.proposals.length > 0)) bad(e, "data");
       const pk = d.pack as Record<string, unknown> | null;
-      if (d.kind === "sent") {
+      if (d.kind === "sent" || (d.kind === "ask" && pk !== null)) {
         if (!pk || typeof pk !== "object" || keys(pk) !== "chars,refs,sha256" || !isStr(pk.sha256) || !HEX64.test(pk.sha256) || typeof pk.chars !== "number") bad(e, "data");
         const refs = pk!.refs as Record<string, unknown>;
         if (!refs || typeof refs !== "object" || Array.isArray(refs) || Object.entries(refs).some(([k, v]) => !/^[A-Z]\d{1,6}$/.test(k) || !isEntryId(v))) bad(e, "data");

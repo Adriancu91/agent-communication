@@ -7,6 +7,7 @@
   "memory": ["core", "storage"],
   "continuity": ["core", "storage", "memory", "projects", "security"],
   "archive": ["core", "storage", "security"],
+  "chat": ["core", "memory", "continuity"],
   "launcher": [],
-  "ui": ["core", "security", "storage", "projects", "memory", "continuity", "archive", "launcher"]
+  "ui": ["core", "security", "storage", "projects", "memory", "continuity", "archive", "launcher", "chat"]
 }

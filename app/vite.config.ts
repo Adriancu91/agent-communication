@@ -11,7 +11,8 @@ function serviceWorker(): Plugin {
     name: "aiw-service-worker",
     apply: "build",
     generateBundle(_options, bundle) {
-      const files = Object.keys(bundle).filter((f) => !f.endsWith(".map")).sort();
+      // the chat's Puter.js is large and useless offline: fetched only when the chat is opened, not pre-cached
+      const files = Object.keys(bundle).filter((f) => !f.endsWith(".map") && !f.startsWith("vendor/")).sort();
       const assets = ["./", ...files.map((f) => `./${f}`), ...PUBLIC_FILES];
       const version = createHash("sha256").update(JSON.stringify(assets)).update(
         Object.values(bundle).map((c) => ("code" in c ? c.code : String(c.source))).join(""),
@@ -40,7 +41,35 @@ function thirdPartyLicenses(): Plugin {
         return `${name} ${meta.version} (${meta.license})\n\n${readFileSync(new URL(file, dir), "utf8").trim()}\n`;
       });
       const head = "AI Workspace — third-party software included in this app / programe terțe incluse în aplicație\n";
-      this.emitFile({ type: "asset", fileName: "licenses.txt", source: [head, ...parts].join("\n" + "-".repeat(60) + "\n") });
+      const vendored = readFileSync(new URL("./vendor/puter/LICENSES.txt", import.meta.url), "utf8").trim() + "\n";
+      this.emitFile({ type: "asset", fileName: "licenses.txt", source: [head, ...parts, vendored].join("\n" + "-".repeat(60) + "\n") });
+    },
+  };
+}
+
+/**
+ * AIW-06: Puter.js, shipped unchanged from vendor/puter/ (Apache-2.0, see vendor/puter/LICENSES.txt) and
+ * served from the app's own address as vendor/puter.js. Its fingerprint is checked, so a changed file
+ * never ships by accident (tests/unit/chat.test.ts checks the same value).
+ */
+export const PUTER_SHA256 = "0e5665b9fd76839e14a56a65dd10c78f43a8d556f51b48a66f67781419d04c2d";
+function puterVendor(): Plugin {
+  const read = () => {
+    const data = readFileSync(new URL("./vendor/puter/puter.js", import.meta.url));
+    if (createHash("sha256").update(data).digest("hex") !== PUTER_SHA256) throw new Error("vendor/puter/puter.js was changed (fingerprint differs)");
+    return data;
+  };
+  return {
+    name: "aiw-puter",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (!req.url || !/\/vendor\/puter\.js(\?|$)/.test(req.url)) return next();
+        res.setHeader("Content-Type", "text/javascript");
+        res.end(read());
+      });
+    },
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: "vendor/puter.js", source: read() });
     },
   };
 }
@@ -94,7 +123,7 @@ export default defineConfig({
   base: "./",
   // AIW_BUILD_TAG is used only by the update test, to build a "newer" version of the same app
   define: { __APP_VERSION__: JSON.stringify(pkg.version + (process.env.AIW_BUILD_TAG ? `+${process.env.AIW_BUILD_TAG}` : "")) },
-  plugins: [thirdPartyLicenses(), serviceWorker()],
+  plugins: [puterVendor(), thirdPartyLicenses(), serviceWorker()],
   oxc: { jsx: { runtime: "automatic", importSource: "preact" } },
   build: { target: "es2020", sourcemap: false, assetsInlineLimit: 0, modulePreload: { polyfill: false } },
   test: { include: ["tests/unit/**/*.test.ts"], environment: "node" },

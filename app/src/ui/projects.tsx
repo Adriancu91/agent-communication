@@ -319,6 +319,7 @@ export function ProjectPage(props: { id: string }): JSX.Element {
           </p>
           {!p.deletedAt && (
             <div class="actions">
+              <a class="button link-button" href={`#/chat/${encodeURIComponent(p.id)}`} data-action="open-chat">{t("chOpenInChat")}</a>
               <button type="button" class="button secondary" onClick={() => setPending({ kind: "edit", project: p })}>{t("edit")}</button>
               <button type="button" class="button secondary" onClick={() => run(() => store.setPinned(p.id, !p.pinned))}>
                 {t(p.pinned ? "unpin" : "pin")}

@@ -362,7 +362,10 @@ test("dark theme renders the memory screens without overflow", async ({ page }) 
   await openMemory(page, pid);
   await addEntry(page, "goal", "Obiectiv în tema întunecată", "", true);
   const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
-  expect(bg).toBe("rgb(21, 21, 21)");
+  // AIW-06 (new look approved by the owner): the dark background is now a deep blue-black, not #151515;
+  // what this test protects is unchanged: the dark theme is applied
+  const [r, g, b] = bg.match(/\d+/g)!.map(Number);
+  expect(Math.max(r, g, b), bg).toBeLessThan(40);
   await openEntry(page, "Obiectiv în tema întunecată");
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(0);
