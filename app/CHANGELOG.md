@@ -2,6 +2,18 @@
 
 Nicio versiune nu e publicată. Fiecare etapă e un PR separat, neîmbinat până la aprobarea lui Adrian.
 
+## AIW-06 — Chat AI în aplicație + interfața nouă (PR separat, ciornă)
+- **Tab nou „Chat”:** discuți cu un model AI direct în aplicație. Te conectezi o singură dată la Puter (cont gratuit, fără chei); fiecare mesaj se plătește din contul tău Puter, nu prin aplicație.
+- **Memoria proiectului ca context;** propunerile modelului trec prin aceeași revizuire. Memoria oficială se schimbă tot doar prin decizia ta.
+- **Economie de tokeni:** memorie completă / compactă / doar importantă / deloc, răspuns normal / scurt / telegrafic, fereastra de istoric, limita de lungime; trei preseturi; estimare și „−N%” înainte de trimitere.
+- **Modele:** listă scurtă cu semn de preț ($ / $$ / $$$) și orice alt model Puter după nume; schimbarea modelului continuă discuția.
+- **Șabloane:** 8 gata făcute și până la 30 proprii.
+- **Interfață nouă:** culori „aurora”, carduri, butoane colorate, bară de taburi cu indicator; tema întunecată.
+- **Tehnic:**
+  - Puter.js 2.6.5 (Apache-2.0) inclus neschimbat, cu amprenta verificată;
+  - CSP: în plus exact `https://api.puter.com` și `wss://api.puter.com`;
+  - arhiva trece la versiunea 3 (versiunile 1 și 2 se citesc în continuare).
+
 ## AIW-05.1 — Flux aproape automat (PR separat, ciornă)
 - **„Trimite la AI” cu o atingere:**
   - pe telefon, prin meniul de partajare, direct în aplicația ChatGPT / Claude / Gemini;

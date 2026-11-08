@@ -4,7 +4,7 @@
 // saved in ONE transaction. Official memory is never changed without the user's explicit acceptance.
 import {
   assistantName, checkEntry, checkExchangeText, checkLink, checkSessionInput, cleanBody, cleanText, cleanTitle, isOfficial,
-  isSessionId, newEntryId, newExchangeId, newLinkId, newSessionId, statusFromLinks, charCount, stripUnsafe, REASON_MAX, SOURCE_MAX,
+  isSessionId, namedProvider, newEntryId, newExchangeId, newLinkId, newSessionId, statusFromLinks, charCount, stripUnsafe, REASON_MAX, SOURCE_MAX,
   type Category, type Exchange, type MemoryEntry, type MemoryLink, type Project, type ProviderId, type Session,
 } from "../core";
 import { JournaledStore, req, StorageError, type PendingEvent } from "../storage";
@@ -66,7 +66,9 @@ export class SessionStore {
   /** A session's steps, oldest first. */
   async exchanges(sessionId: string): Promise<Exchange[]> {
     const all = await this.base.read(["exchanges"], (tx) => byIndex<Exchange>(tx, "exchanges", "sessionId", sessionId));
-    return all.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+    // same millisecond: a message comes before the answer to it
+    const rank = { sent: 0, ask: 1, reply: 2, note: 3 } as const;
+    return all.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || rank[a.kind] - rank[b.kind] || a.id.localeCompare(b.id));
   }
 
   /** The project's saved replies and notes, most recent first (to include in a new package if the user wants). */
@@ -78,7 +80,7 @@ export class SessionStore {
     }));
     const sById = new Map(sessions.map((s) => [s.id, s]));
     return exchanges
-      .filter((x) => x.kind !== "sent")
+      .filter((x) => x.kind === "reply" || x.kind === "note")
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
       .slice(0, limit)
       .map((exchange) => ({ exchange, assistant: sById.has(exchange.sessionId) ? assistantName(sById.get(exchange.sessionId)!) : "AI" }));
@@ -92,7 +94,8 @@ export class SessionStore {
    */
   async start(projectId: string, input: { provider: ProviderId; providerName?: string; task?: string; continues?: string | null },
     pack: { sha256: string; chars: number; refs: Record<string, string> }): Promise<Session> {
-    const providerName = input.provider === "other" ? cleanTitle(input.providerName ?? "") : "";
+    if (input.provider === "inapp") throw new SessionError("invalid", "provider"); // the in-app chat starts with startChat()
+    const providerName = namedProvider(input.provider) ? cleanTitle(input.providerName ?? "") : "";
     const task = cleanText(input.task ?? "");
     const problem = checkSessionInput({ provider: input.provider, providerName, task });
     if (problem) throw new SessionError(problem);
@@ -122,6 +125,36 @@ export class SessionStore {
     });
   }
 
+  /**
+   * AIW-06: starts a chat inside the app with one model. Nothing is sent yet: each message is saved with
+   * ask(), the model's answer with applyReply(). `continues`: the chat this one carries on (another model).
+   */
+  async startChat(projectId: string, model: string, continues: string | null = null): Promise<Session> {
+    const providerName = cleanTitle(model);
+    const problem = checkSessionInput({ provider: "inapp", providerName, task: "" });
+    if (problem) throw new SessionError(problem);
+    return this.base.write(STORES, async (tx, ts) => {
+      const project = await getProject(tx, projectId);
+      if (!project || project.deletedAt) throw new SessionError("project");
+      if (continues) {
+        const prev = await getSession(tx, continues);
+        if (!prev || prev.projectId !== projectId) throw new SessionError("missing");
+      }
+      const session: Session = { id: newSessionId(), projectId, provider: "inapp", providerName, task: "", status: "open", continues: continues ?? null, createdAt: ts, updatedAt: ts, v: 1 };
+      return {
+        result: session,
+        events: [{ type: "session.created", projectId, entityId: session.id, data: { provider: "inapp", providerName, task: "", continues: session.continues } }],
+        apply: (w) => void w.objectStore("sessions").add(session),
+      };
+    });
+  }
+
+  /** AIW-06: the user's message in an in-app chat, with the fingerprint of the project context sent along (or null). */
+  async ask(sessionId: string, text: string, pack: Exchange["pack"]): Promise<Exchange> {
+    if (pack && !/^[0-9a-f]{64}$/.test(pack.sha256)) throw new SessionError("invalid", "pack");
+    return this.addExchange(sessionId, "ask", text, pack ? { ...pack, refs: { ...pack.refs } } : null);
+  }
+
   /** The package was prepared again inside an open session (e.g. after editing memory). */
   async recordSent(sessionId: string, pack: { sha256: string; chars: number; refs: Record<string, string> }): Promise<Exchange> {
     return this.addExchange(sessionId, "sent", "", pack);
@@ -131,14 +164,16 @@ export class SessionStore {
     return this.addExchange(sessionId, "note", text, null);
   }
 
-  private async addExchange(sessionId: string, kind: "sent" | "note", raw: string, pack: Exchange["pack"]): Promise<Exchange> {
+  private async addExchange(sessionId: string, kind: "sent" | "note" | "ask", raw: string, pack: Exchange["pack"]): Promise<Exchange> {
     const text = cleanText(raw);
-    if (kind === "note") {
+    if (kind !== "sent") {
       const p = checkExchangeText(text);
       if (p) throw new SessionError(p);
     }
     return this.base.write(STORES, async (tx, ts) => {
       const s = await this.writable(tx, sessionId);
+      // a chat message only in a chat; a package only in a session with an outside assistant
+      if ((kind === "ask") !== (s.provider === "inapp") && kind !== "note") throw new SessionError("invalid", "kind");
       const x: Exchange = { id: newExchangeId(), sessionId, projectId: s.projectId, kind, text, pack, proposals: [], createdAt: ts, v: 1 };
       return {
         result: x,

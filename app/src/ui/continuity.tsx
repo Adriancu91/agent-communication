@@ -20,7 +20,7 @@ const oneKey = (c: Category) => `one_${c}` as Key;
 const sessionUrl = (id: string) => `#/sesiune/${encodeURIComponent(id)}`;
 
 /** Sessions of all projects (or one), reloaded after any change. */
-function useSessions(): { sessions: Session[]; loading: boolean } {
+export function useSessions(): { sessions: Session[]; loading: boolean } {
   const [state, setState] = useState<{ sessions: Session[]; loading: boolean }>({ sessions: [], loading: true });
   useEffect(() => {
     let alive = true;
@@ -51,7 +51,7 @@ function useSteps(sessionId: string): Exchange[] | null {
 }
 
 /** Copies text; returns false when the browser refuses (the caller then shows the text to copy by hand). */
-async function copyText(text: string): Promise<boolean> {
+export async function copyText(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);
     return true;
@@ -76,7 +76,7 @@ function slug(s: string): string {
 }
 
 /** A row of choices that behaves like radio buttons, including the arrow keys. */
-function Segmented<T extends string>(props: { label: string; options: { value: T; label: string }[]; value: T; onChange: (v: T) => void; name: string }): JSX.Element {
+export function Segmented<T extends string>(props: { label: string; options: { value: T; label: string }[]; value: T; onChange: (v: T) => void; name: string }): JSX.Element {
   const move = (e: KeyboardEvent) => {
     const i = props.options.findIndex((o) => o.value === props.value);
     const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
@@ -248,7 +248,7 @@ export function Launcher(props: { projectId?: string; continues?: string }): JSX
       <div class="card step-card">
         <h2>2. {t("lnStepAi")}</h2>
         <Segmented name="provider" label={t("lnStepAi")} value={provider} onChange={setProvider}
-          options={PROVIDERS.map((p) => ({ value: p.id, label: p.id === "other" ? t("lnOtherAi") : p.name }))} />
+          options={PROVIDERS.filter((p) => p.id !== "inapp").map((p) => ({ value: p.id, label: p.id === "other" ? t("lnOtherAi") : p.name }))} />
         {provider === "other" && (
           <label class="field">
             <span>{t("lnOtherName")}</span>
@@ -395,7 +395,8 @@ export function ReceiveScreen(): JSX.Element {
   const { projects } = useProjects();
   const text = readSharedText();
   const byId = new Map(projects.map((p) => [p.id, p]));
-  const open = sessions.filter((s) => s.status === "open" && byId.has(s.projectId) && !byId.get(s.projectId)!.deletedAt);
+  // a reply from an outside assistant never goes into an in-app chat (that one is the model's own answer)
+  const open = sessions.filter((s) => s.status === "open" && s.provider !== "inapp" && byId.has(s.projectId) && !byId.get(s.projectId)!.deletedAt);
   const attach = (sessionId: string) => {
     setPendingReply(sessionId, text ?? "");
     clearSharedText();
@@ -449,12 +450,13 @@ export function SessionPage(props: { id: string }): JSX.Element {
   const [initial, setInitial] = useState<string>("");
   // a reply brought from the launcher, the share sheet or the clipboard opens the review at once
   useEffect(() => {
+    if (s?.provider === "inapp") return; // in-app chats are answered by the model, in the chat
     const text = takePendingReply(props.id);
     if (text !== null) {
       setInitial(text);
       setDlg("reply");
     }
-  }, [props.id]);
+  }, [props.id, s?.provider]);
   const addReply = async () => {
     setInitial((await readClipboard()) ?? "");
     setDlg("reply");
@@ -484,7 +486,7 @@ export function SessionPage(props: { id: string }): JSX.Element {
         {t("createdOn")} {date(s.createdAt)} · <span class="tag" data-status={s.status}>{t(s.status === "open" ? "ssOpen" : "ssClosed")}</span>
         {prev ? <> · <a href={sessionUrl(prev.id)}>{fill(t("ssContinues"), { ai: assistantName(prev) })}</a></> : null}
       </p>
-      {writable && awaiting && (
+      {writable && awaiting && s.provider !== "inapp" && (
         <div class="card notice" data-awaiting>
           <p><strong>{fill(t("ssAwaiting"), { ai: assistantName(s) })}</strong></p>
           <p class="muted small-left">{t("ssAwaitingHint")}</p>
@@ -492,7 +494,15 @@ export function SessionPage(props: { id: string }): JSX.Element {
       )}
       {s.task && <div class="card"><h2>{t("lnStepTask")}</h2><p class="pre">{s.task}</p></div>}
 
-      {writable && (
+      {s.provider === "inapp" && !project.deletedAt && (
+        <div class="actions">
+          <a class="button link-button" href={`#/chat/${encodeURIComponent(project.id)}/${encodeURIComponent(s.id)}`} data-action="open-chat">{t("chOpenInChat")}</a>
+          {s.status === "open"
+            ? <button type="button" class="button secondary" data-action="close-session" onClick={() => run(() => sessionStore.close(s.id), "ssClosedToast")}>{t("ssClose")}</button>
+            : <button type="button" class="button secondary" data-action="reopen-session" onClick={() => run(() => sessionStore.reopen(s.id), "ssReopenedToast")}>{t("ssReopen")}</button>}
+        </div>
+      )}
+      {writable && s.provider !== "inapp" && (
         <div class="actions">
           <button type="button" class="button" data-action="add-reply" onClick={() => void addReply()}>{t("ssAddReply")}</button>
           <button type="button" class="button secondary" data-action="add-note" onClick={() => setDlg("note")}>{t("ssAddNote")}</button>
@@ -500,7 +510,7 @@ export function SessionPage(props: { id: string }): JSX.Element {
           <button type="button" class="button secondary" data-action="close-session" onClick={() => run(() => sessionStore.close(s.id), "ssClosedToast")}>{t("ssClose")}</button>
         </div>
       )}
-      {!writable && s.status === "closed" && !project.deletedAt && (
+      {!writable && s.status === "closed" && !project.deletedAt && s.provider !== "inapp" && (
         <div class="actions">
           <a class="button secondary link-button" href={`#/lansator/${encodeURIComponent(project.id)}/${encodeURIComponent(s.id)}`} data-action="continue-elsewhere">{t("ssContinueElsewhere")}</a>
           <button type="button" class="button secondary" data-action="reopen-session" onClick={() => run(() => sessionStore.reopen(s.id), "ssReopenedToast")}>{t("ssReopen")}</button>
@@ -514,6 +524,7 @@ export function SessionPage(props: { id: string }): JSX.Element {
             <p class="row-meta">{date(x.createdAt)}</p>
             {x.kind === "sent" && <p>{fill(t("ssSent"), { c: String(x.pack!.chars), n: String(Object.keys(x.pack!.refs).length) })}</p>}
             {x.kind === "note" && <p class="pre">{x.text}</p>}
+            {x.kind === "ask" && <><p><strong>{t("chYou")}</strong></p><p class="pre">{x.text}</p></>}
             {x.kind === "reply" && (
               <>
                 <p><strong>{fill(t("ssReplyFrom"), { ai: assistantName(s) })}</strong></p>
@@ -541,7 +552,7 @@ export function SessionPage(props: { id: string }): JSX.Element {
 
       {dlg === "note" && <NoteDialog sessionId={s.id} onClose={() => setDlg(null)} />}
       {/* the review compares with the memory and resolves the package's references: it waits until both are loaded */}
-      {dlg === "reply" && steps !== null && !memLoading && <ReplyDialog session={s} entries={entries} steps={steps ?? []} initialText={initial} onClose={() => setDlg(null)} />}
+      {dlg === "reply" && steps !== null && !memLoading && s.provider !== "inapp" && <ReplyDialog session={s} entries={entries} steps={steps ?? []} initialText={initial} onClose={() => setDlg(null)} />}
     </section>
   );
 }
@@ -578,7 +589,7 @@ function NoteDialog(props: { sessionId: string; onClose: () => void }): JSX.Elem
 
 interface Item extends ProposalDraft { verdict: Verdict | null; editedTitle: string; editedBody: string; editedCategory: Category; keepRelation: boolean }
 
-function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: Exchange[]; initialText?: string; onClose: () => void }): JSX.Element {
+export function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: Exchange[]; initialText?: string; onClose: () => void; onSaved?: () => void }): JSX.Element {
   const { t } = useI18n();
   const [text, setText] = useState(props.initialText ?? "");
   const [parsed, setParsed] = useState<ParsedReply | null>(null);
@@ -589,7 +600,7 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
   const top = useRef<HTMLParagraphElement>(null);
   const byId = new Map(props.entries.map((e) => [e.id, e]));
   // the references of the latest package sent in this session (D1 → the entry it meant)
-  const refs = [...props.steps].reverse().find((x) => x.kind === "sent")?.pack?.refs ?? {};
+  const refs = [...props.steps].reverse().find((x) => x.pack)?.pack?.refs ?? {};
 
   const analyse = (source = text) => {
     setText(source);
@@ -654,6 +665,7 @@ function ReplyDialog(props: { session: Session; entries: MemoryEntry[]; steps: E
           replaces: decisionRel, resolves: resolveRel, reason: x.reason, verdict: x.verdict!,
         };
       }));
+      props.onSaved?.();
       props.onClose();
       const c = { a: list.filter((x) => x.verdict === "accept").length, r: list.filter((x) => x.verdict === "reject").length, l: list.filter((x) => x.verdict === "later").length };
       toast({ text: fill(t("rvSaved"), { a: String(c.a), r: String(c.r), l: String(c.l) }) });

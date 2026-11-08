@@ -13,7 +13,7 @@
 import {
   canonical, charCount, checkDescription, checkEntry, checkName, cleanBody, cleanDescription, cleanName, cleanTitle,
   EVENT_TYPES, eventHash, isCategory, isEntryId, isLinkType, isOfficial, REASON_MAX, sha256, statusFromLinks, SOURCE_MAX,
-  UNSAFE_CHARS, isProvider, isSessionId, isExchangeId, EXCHANGE_MAX, TASK_MAX, PROVIDER_NAME_MAX,
+  UNSAFE_CHARS, isProvider, namedProvider, isSessionId, isExchangeId, EXCHANGE_MAX, TASK_MAX, PROVIDER_NAME_MAX,
   type JournalEvent, type MemoryEntry, type MemoryLink, type Project, type Session, type Exchange,
 } from "../core";
 import { checkEventData, checkProjectExtras, replayProject } from "./replay";
@@ -22,8 +22,10 @@ export const EXPORT_FORMAT = "aiw-export";
 /**
  * Version of the archive format. A newer app reads every older version; an older app refuses newer ones.
  * 1 — AIW-04: project, memory, links, history.  2 — AIW-05: also the AI work sessions and their steps.
+ * 3 — AIW-06: also chats inside the app (provider "inapp", steps of kind "ask"). Same shape as 2.
+ * A project without in-app chats is still written as version 2, so the previous app version can read it.
  */
-export const EXPORT_VERSION = 2;
+export const EXPORT_VERSION = 3;
 export const MANIFEST_NAME = "aiw-export.json";
 export const README_NAME = "CITESTE.txt";
 
@@ -49,7 +51,7 @@ export type ArchivedEvent = Pick<JournalEvent, "seq" | "ts" | "type" | "projectI
 
 export interface ProjectFile {
   format: "aiw-project";
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   project: Project;
   memory: MemoryEntry[];
   links: MemoryLink[];
@@ -120,14 +122,17 @@ export async function fingerprint(bytes: Uint8Array): Promise<string> {
 export async function archiveFiles(projects: ProjectFile[], info: { app: string; exportedAt: string; scope: "project" | "all"; sourceJournal: Manifest["sourceJournal"] }): Promise<{ name: string; data: Uint8Array }[]> {
   const files: { name: string; data: Uint8Array }[] = [];
   const list: ManifestProject[] = [];
+  const versions: number[] = [];
   for (const p of projects) {
-    const v2 = { format: "aiw-project", version: 2, project: p.project, memory: p.memory, links: p.links, sessions: p.sessions, exchanges: p.exchanges, events: p.events };
-    const data = enc.encode(JSON.stringify(v2, null, 1));
+    const hasChat = p.sessions.some((x) => x.provider === "inapp") || p.exchanges.some((x) => x.kind === "ask");
+    const v3 = { format: "aiw-project", version: hasChat ? 3 : 2, project: p.project, memory: p.memory, links: p.links, sessions: p.sessions, exchanges: p.exchanges, events: p.events };
+    versions.push(v3.version);
+    const data = enc.encode(JSON.stringify(v3, null, 1));
     const file = projectFileName(p.project.id);
     list.push({ id: p.project.id, name: p.project.name, file, sha256: await fingerprint(data), entries: p.memory.length, links: p.links.length, events: p.events.length });
     files.push({ name: file, data });
   }
-  const manifest: Manifest = { format: EXPORT_FORMAT, version: EXPORT_VERSION, app: info.app, exportedAt: info.exportedAt, scope: info.scope, projects: list, sourceJournal: info.sourceJournal };
+  const manifest: Manifest = { format: EXPORT_FORMAT, version: Math.max(2, ...versions) as 2 | 3, app: info.app, exportedAt: info.exportedAt, scope: info.scope, projects: list, sourceJournal: info.sourceJournal };
   const readme = [
     "AI Workspace — export de proiecte",
     "",
@@ -254,7 +259,8 @@ function checkSessionRecord(x: unknown, projectId: string): Session {
   if (typeof x.providerName !== "string" || charCount(x.providerName) > PROVIDER_NAME_MAX || CONTROL.test(x.providerName) || x.providerName.includes("\n")) {
     throw new ArchiveError("invalidRecord", "session provider");
   }
-  if ((x.provider === "other") !== (x.providerName !== "")) throw new ArchiveError("invalidRecord", "session provider");
+  if (namedProvider(x.provider) !== (x.providerName !== "")) throw new ArchiveError("invalidRecord", "session provider");
+  if (x.provider === "inapp" && x.task !== "") throw new ArchiveError("invalidRecord", "session task");
   if (typeof x.task !== "string" || charCount(x.task) > TASK_MAX || CONTROL.test(x.task)) throw new ArchiveError("invalidRecord", "session task");
   if (x.status !== "open" && x.status !== "closed") throw new ArchiveError("invalidRecord", "session status");
   if (x.continues !== null && !isSessionId(x.continues)) throw new ArchiveError("invalidRecord", "session continues");
@@ -266,10 +272,10 @@ function checkExchangeRecord(x: unknown, projectId: string, sessionIds: Set<stri
   if (!isObj(x)) throw new ArchiveError("invalidRecord", "exchange");
   exactKeys(x, ["id", "sessionId", "projectId", "kind", "text", "pack", "proposals", "createdAt", "v"], "exchange");
   if (!isExchangeId(x.id) || x.projectId !== projectId || typeof x.sessionId !== "string" || !sessionIds.has(x.sessionId)) throw new ArchiveError("invalidRecord", "exchange id");
-  if (x.kind !== "sent" && x.kind !== "reply" && x.kind !== "note") throw new ArchiveError("invalidRecord", "exchange kind");
+  if (x.kind !== "sent" && x.kind !== "reply" && x.kind !== "note" && x.kind !== "ask") throw new ArchiveError("invalidRecord", "exchange kind");
   if (typeof x.text !== "string" || charCount(x.text) > EXCHANGE_MAX || CONTROL.test(x.text)) throw new ArchiveError("invalidRecord", "exchange text");
   if ((x.kind === "sent") !== (x.text === "")) throw new ArchiveError("invalidRecord", "exchange text");
-  if (x.kind === "sent") {
+  if (x.kind === "sent" || (x.kind === "ask" && x.pack !== null)) {
     const pk = x.pack;
     if (!isObj(pk) || Object.keys(pk).sort().join(",") !== "chars,refs,sha256" || typeof pk.sha256 !== "string" || !HEX64.test(pk.sha256)
       || typeof pk.chars !== "number" || !Number.isInteger(pk.chars) || pk.chars < 0 || !isObj(pk.refs)) {
@@ -346,7 +352,7 @@ export async function parseArchive(files: Map<string, Uint8Array>): Promise<Pars
     if ((await fingerprint(bytes)) !== mp.sha256) throw new ArchiveError("fingerprint", mp.file);
     const raw = parseJson(bytes, mp.file);
     if (!isObj(raw) || raw.format !== "aiw-project") throw new ArchiveError("structure", mp.file);
-    if (raw.version !== 1 && raw.version !== 2) throw new ArchiveError(typeof raw.version === "number" && raw.version > 2 ? "newerVersion" : "structure", mp.file);
+    if (raw.version !== 1 && raw.version !== 2 && raw.version !== 3) throw new ArchiveError(typeof raw.version === "number" && raw.version > 3 ? "newerVersion" : "structure", mp.file);
     if (raw.version > manifest.version) throw new ArchiveError("structure", "project file newer than manifest");
     exactKeys(raw, raw.version === 1 ? ["format", "version", "project", "memory", "links", "events"] : ["format", "version", "project", "memory", "links", "sessions", "exchanges", "events"], "project file");
     const project = checkProject(raw.project);
@@ -367,7 +373,7 @@ export async function parseArchive(files: Map<string, Uint8Array>): Promise<Pars
     }
     let sessions: Session[] = [];
     let exchanges: Exchange[] = [];
-    if (raw.version === 2) {
+    if (raw.version >= 2) {
       if (!Array.isArray(raw.sessions) || raw.sessions.length > MAX_SESSIONS) throw new ArchiveError("invalidRecord", "sessions");
       if (!Array.isArray(raw.exchanges) || raw.exchanges.length > MAX_EXCHANGES) throw new ArchiveError("invalidRecord", "exchanges");
       sessions = (raw.sessions as unknown[]).map((x) => checkSessionRecord(x, project.id));
@@ -379,13 +385,20 @@ export async function parseArchive(files: Map<string, Uint8Array>): Promise<Pars
       }
       for (const x of sessions) if (x.continues && !sids.has(x.continues)) throw new ArchiveError("invalidRecord", "session continues");
       exchanges = (raw.exchanges as unknown[]).map((x) => checkExchangeRecord(x, project.id, sids));
+      // chats inside the app exist only from version 3 on
+      if (raw.version < 3 && (sessions.some((x) => x.provider === "inapp") || exchanges.some((x) => x.kind === "ask"))) throw new ArchiveError("structure", "chat in an older format");
+      // a chat message only in a chat; a package only in a session with an outside assistant
+      const prov = new Map(sessions.map((x) => [x.id, x.provider]));
+      for (const x of exchanges) {
+        if ((x.kind === "ask" && prov.get(x.sessionId) !== "inapp") || (x.kind === "sent" && prov.get(x.sessionId) === "inapp")) throw new ArchiveError("invalidRecord", "exchange kind");
+      }
       for (const x of exchanges) {
         if (allExchangeIds.has(x.id)) throw new ArchiveError("invalidRecord", "duplicate exchange");
         allExchangeIds.add(x.id);
       }
     }
     const events = await checkEvents(raw.events, project.id);
-    const pf: ProjectFile = { format: "aiw-project", version: raw.version as 1 | 2, project, memory, links, sessions, exchanges, events };
+    const pf: ProjectFile = { format: "aiw-project", version: raw.version as 1 | 2 | 3, project, memory, links, sessions, exchanges, events };
     checkConsistency(pf);
     if (mp.entries !== memory.length || mp.links !== links.length || mp.events !== events.length) throw new ArchiveError("structure", "manifest counts");
     projects.push(pf);

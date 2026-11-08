@@ -4,17 +4,19 @@ import type { ComponentChildren, JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { useClosedByNewerVersion, useStorageInfo } from "./data";
 import { setLang, useI18n, type Key, type Lang } from "./i18n";
-import { IconContinuity, IconLauncher, IconMemory, IconProjects, IconSettings } from "./icons";
+import { IconChat, IconContinuity, IconLauncher, IconMemory, IconProjects, IconSettings } from "./icons";
 import { isStandalone, useOfflineState } from "./offline";
 import { BackupCard } from "./backup";
+import { ChatScreen } from "./chat";
 import { ContinuityScreen, Launcher, ReceiveScreen, SessionPage } from "./continuity";
 import { ContextPreview, EntryPage, MemoryHistory, MemoryTab, ProjectMemory } from "./memory";
 import { ProjectPage, ProjectsScreen, TrashScreen } from "./projects";
 import { ToastHost } from "./widgets";
 
-type Route = "proiecte" | "memorie" | "continuitate" | "lansator" | "setari";
+type Route = "chat" | "proiecte" | "memorie" | "continuitate" | "lansator" | "setari";
 
 const TABS: { route: Route; label: Key; Icon: () => JSX.Element }[] = [
+  { route: "chat", label: "tabChat", Icon: IconChat },
   { route: "proiecte", label: "tabProjects", Icon: IconProjects },
   { route: "memorie", label: "tabMemory", Icon: IconMemory },
   { route: "continuitate", label: "tabContinuity", Icon: IconContinuity },
@@ -25,7 +27,7 @@ const TABS: { route: Route; label: Key; Icon: () => JSX.Element }[] = [
 /** #/proiecte, #/proiect/<id>, #/cos and the other tabs. Unknown addresses open the project list. */
 interface Location {
   route: Route;
-  view: "list" | "project" | "trash" | "tab" | "memory" | "entry" | "history" | "context" | "session" | "launch" | "receive";
+  view: "list" | "project" | "trash" | "tab" | "memory" | "entry" | "history" | "context" | "session" | "launch" | "receive" | "chat";
   id?: string;
   entry?: string;
 }
@@ -42,6 +44,9 @@ function readRoute(): Location {
     return { route: "memorie", view: "entry", id, entry: rest };
   }
   // AIW-05: a session page; the launcher opened for a project (and, optionally, the session it continues)
+  // AIW-06: #/chat, #/chat/<project>, #/chat/<project>/<chat>
+  const chat = /^chat(?:\/([^/]+)(?:\/([^/]+))?)?$/.exec(r);
+  if (chat) return { route: "chat", view: "chat", id: chat[1] ? decodeURIComponent(chat[1]) : undefined, entry: chat[2] ? decodeURIComponent(chat[2]) : undefined };
   if (r === "primire") return { route: "continuitate", view: "receive" };
   const ses = /^sesiune\/([^/]+)$/.exec(r);
   if (ses) return { route: "continuitate", view: "session", id: decodeURIComponent(ses[1]) };
@@ -108,6 +113,7 @@ export function App(): JSX.Element {
         {route === "continuitate" && loc.view === "tab" && <ContinuityScreen />}
         {loc.view === "session" && <SessionPage id={loc.id!} key={loc.id} />}
         {loc.view === "receive" && <ReceiveScreen />}
+        {loc.view === "chat" && <ChatScreen projectId={loc.id} sessionId={loc.entry} key={loc.id ?? ""} />}
         {route === "lansator" && <Launcher projectId={loc.id} continues={loc.entry} key={`${loc.id}|${loc.entry}`} />}
         {route === "setari" && <Settings />}
       </main>

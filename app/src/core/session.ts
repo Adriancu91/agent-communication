@@ -12,6 +12,8 @@ export const PROVIDERS = [
   { id: "claude", name: "Claude", url: "https://claude.ai/new" },
   { id: "gemini", name: "Gemini", url: "https://gemini.google.com/app" },
   { id: "other", name: "", url: "" },
+  // AIW-06: the chat inside the app (through Puter, signed in by the user). providerName = the model's name.
+  { id: "inapp", name: "", url: "" },
 ] as const;
 export type ProviderId = (typeof PROVIDERS)[number]["id"];
 
@@ -39,7 +41,10 @@ export interface Session {
   v: 1;
 }
 
-export type ExchangeKind = "sent" | "reply" | "note";
+export type ExchangeKind = "sent" | "reply" | "note" | "ask";
+
+/** Providers whose name is given by the user / the app (the assistant for "other", the model for "inapp"). */
+export const namedProvider = (p: string): boolean => p === "other" || p === "inapp";
 
 /**
  * One step of a session, saved in order.
@@ -47,6 +52,7 @@ export type ExchangeKind = "sent" | "reply" | "note";
  *         short references it used; the text itself can be rebuilt and is not stored twice)
  * reply — the AI's answer, pasted by the user
  * note  — the user's own note about the session
+ * ask   — AIW-06, in-app chat: the user's message; `pack` = the project context sent with it (or null)
  */
 export interface Exchange {
   id: string; // "X-<uuid>"
@@ -80,8 +86,8 @@ export function cleanText(raw: string): string {
 export type SessionProblem = "providerName" | "taskLong" | "textEmpty" | "textLong" | "chars";
 
 export function checkSessionInput(s: { provider: ProviderId; providerName: string; task: string }): SessionProblem | null {
-  if (s.provider === "other" && (!s.providerName || charCount(s.providerName) > PROVIDER_NAME_MAX)) return "providerName";
-  if (s.provider !== "other" && s.providerName) return "providerName";
+  if (namedProvider(s.provider) && (!s.providerName || charCount(s.providerName) > PROVIDER_NAME_MAX)) return "providerName";
+  if (!namedProvider(s.provider) && s.providerName) return "providerName";
   if (CONTROL.test(s.providerName) || s.providerName.includes("\n") || CONTROL.test(s.task)) return "chars";
   if (charCount(s.task) > TASK_MAX) return "taskLong";
   return null;
@@ -96,5 +102,5 @@ export function checkExchangeText(text: string): SessionProblem | null {
 
 /** How a session is called in lists: the provider's name, or the name the user gave for "other". */
 export function assistantName(s: Pick<Session, "provider" | "providerName">): string {
-  return s.provider === "other" ? s.providerName : PROVIDERS.find((p) => p.id === s.provider)!.name;
+  return namedProvider(s.provider) ? s.providerName : PROVIDERS.find((p) => p.id === s.provider)!.name;
 }
