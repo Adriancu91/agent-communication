@@ -10,8 +10,14 @@ import { PuterError, type ChatResult } from "./puter";
 export const FREE_URL = "https://text.pollinations.ai/openai";
 const FREE_MODEL_ID = "openai-fast"; // the anonymous tier's model (GPT-OSS 20B)
 
+/** AIW-08: when the last free request started (in this tab); the pilot's helpers wait their turn. */
+let lastAt = 0;
+/** Milliseconds until a helper may make a free request (0 = now). */
+export const freeSlotIn = (gap: number): number => Math.max(0, lastAt + gap - Date.now());
+
 /** One call, streamed (Server-Sent Events): `onText` receives the answer so far. */
 export async function chatFree(messages: WireMessage[], onText: (soFar: string) => void, signal?: AbortSignal): Promise<ChatResult> {
+  lastAt = Date.now();
   let res: Response;
   try {
     res = await fetch(FREE_URL, {
@@ -74,4 +80,21 @@ export async function chatFree(messages: WireMessage[], onText: (soFar: string) 
   }
   if (!text.trim()) throw new PuterError("empty");
   return { text, cut, usage };
+}
+
+/**
+ * AIW-08: one short helper request for the pilot (a summary, passages of a document), with a time limit.
+ * It never waits for its turn and never retries: if the service is busy or slow, the caller goes on without it.
+ */
+export async function helperFree(messages: WireMessage[], timeoutMs: number, signal?: AbortSignal): Promise<string> {
+  const ctrl = new AbortController();
+  const stop = () => ctrl.abort();
+  const timer = setTimeout(stop, timeoutMs);
+  signal?.addEventListener("abort", stop, { once: true });
+  try {
+    return (await chatFree(messages, () => undefined, ctrl.signal)).text;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", stop);
+  }
 }
