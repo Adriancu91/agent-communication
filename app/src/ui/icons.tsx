@@ -47,3 +47,7 @@ export const IconStop = (): JSX.Element => (
 export const IconSpark = (): JSX.Element => (
   <svg {...base} width={30} height={30}><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z" /></svg>
 );
+// AIW-06.1: import
+export const IconImport = (): JSX.Element => (
+  <svg {...base}><path d="M12 4v11M7 10l5 5 5-5" /><path d="M5 19h14" /></svg>
+);

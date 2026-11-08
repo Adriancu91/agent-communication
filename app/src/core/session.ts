@@ -43,6 +43,9 @@ export interface Session {
 
 export type ExchangeKind = "sent" | "reply" | "note" | "ask";
 
+/** AIW-06.1: a conversation imported from the user's own account is a chat whose "model" names its origin. */
+export const IMPORTED: Record<string, string> = { "import:chatgpt": "ChatGPT ⇣", "import:claude": "Claude ⇣" };
+
 /** Providers whose name is given by the user / the app (the assistant for "other", the model for "inapp"). */
 export const namedProvider = (p: string): boolean => p === "other" || p === "inapp";
 
@@ -102,5 +105,6 @@ export function checkExchangeText(text: string): SessionProblem | null {
 
 /** How a session is called in lists: the provider's name, or the name the user gave for "other". */
 export function assistantName(s: Pick<Session, "provider" | "providerName">): string {
+  if (s.provider === "inapp" && Object.hasOwn(IMPORTED, s.providerName)) return IMPORTED[s.providerName];
   return namedProvider(s.provider) ? s.providerName : PROVIDERS.find((p) => p.id === s.provider)!.name;
 }

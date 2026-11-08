@@ -72,7 +72,7 @@ export function checkEventData(e: ArchivedEvent): void {
     case "session.created":
       needKeys(e, d, ["provider", "providerName", "task", "continues"]);
       if (!isProvider(d.provider) || !isStr(d.providerName) || charCount(d.providerName) > PROVIDER_NAME_MAX || CONTROL.test(d.providerName)) bad(e, "data");
-      if (namedProvider(d.provider as string) !== (d.providerName !== "") || (d.provider === "inapp" && d.task !== "") || !isStr(d.task) || cleanText(d.task) !== d.task || charCount(d.task) > TASK_MAX) bad(e, "data");
+      if (namedProvider(d.provider as string) !== (d.providerName !== "") || !isStr(d.task) || cleanText(d.task) !== d.task || charCount(d.task) > TASK_MAX) bad(e, "data");
       if (d.continues !== null && !isSessionId(d.continues)) bad(e, "data");
       break;
     case "session.exchange": {

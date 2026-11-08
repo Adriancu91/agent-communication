@@ -201,7 +201,10 @@ export function buildMessages(system: string, earlier: Pick<Exchange, "kind" | "
     // two messages of the same side in a row (a question whose answer failed) are joined: some models
     // accept only alternating turns
     const last = out[out.length - 1];
-    if (last.role === m.role && m.role !== "system") last.content += "\n\n" + m.content;
+    if (last.role === m.role && m.role !== "system") {
+      // the same question asked again (after a failure, or on another model) is sent once
+      if (last.content !== m.content && !last.content.endsWith("\n\n" + m.content)) last.content += "\n\n" + m.content;
+    }
     else out.push(m);
   };
   for (const x of window) push(x.kind === "ask" ? { role: "user", content: x.text } : { role: "assistant", content: withoutProposals(x.text, lang) });

@@ -149,6 +149,44 @@ export class SessionStore {
     });
   }
 
+  /**
+   * AIW-06.1: a conversation exported from the user's own ChatGPT / Claude account becomes a chat of the
+   * project (closed; it can be continued in the chat with any model). One write: the chat and every message,
+   * in order. The official memory is not touched: proposals come only from a review the user does later.
+   */
+  async importChat(projectId: string, origin: "chatgpt" | "claude", title: string, messages: { role: "user" | "assistant"; text: string }[]): Promise<Session> {
+    const providerName = `import:${origin}`;
+    const task = cleanText([...title.replace(/\s+/g, " ")].slice(0, 200).join(""));
+    const list = messages.map((m) => ({ role: m.role, text: cleanText(m.text) })).filter((m) => m.text);
+    if (list.length === 0 || list[0].role !== "user") throw new SessionError("textEmpty");
+    for (const m of list) {
+      const p = checkExchangeText(m.text);
+      if (p) throw new SessionError(p);
+    }
+    return this.base.write(STORES, async (tx, ts) => {
+      const project = await getProject(tx, projectId);
+      if (!project || project.deletedAt) throw new SessionError("project");
+      // one millisecond apart, so the order of the conversation is kept
+      const at = (i: number) => new Date(Date.parse(ts) + i).toISOString();
+      const end = at(list.length + 1);
+      const session: Session = { id: newSessionId(), projectId, provider: "inapp", providerName, task, status: "closed", continues: null, createdAt: ts, updatedAt: end, v: 1 };
+      const events: PendingEvent[] = [{ type: "session.created", projectId, entityId: session.id, data: { provider: "inapp", providerName, task, continues: null } }];
+      const rows: Exchange[] = list.map((m, i) => ({
+        id: newExchangeId(), sessionId: session.id, projectId, kind: m.role === "user" ? "ask" : "reply", text: m.text, pack: null, proposals: [], createdAt: at(i + 1), v: 1,
+      }));
+      for (const x of rows) events.push({ ...exchangeEvent(x), ts: x.createdAt });
+      events.push({ type: "session.closed", projectId, entityId: session.id, data: {}, ts: end });
+      return {
+        result: session,
+        events,
+        apply: (w) => {
+          w.objectStore("sessions").add(session);
+          for (const x of rows) w.objectStore("exchanges").add(x);
+        },
+      };
+    });
+  }
+
   /** AIW-06: the user's message in an in-app chat, with the fingerprint of the project context sent along (or null). */
   async ask(sessionId: string, text: string, pack: Exchange["pack"]): Promise<Exchange> {
     if (pack && !/^[0-9a-f]{64}$/.test(pack.sha256)) throw new SessionError("invalid", "pack");

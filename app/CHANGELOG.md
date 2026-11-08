@@ -2,6 +2,17 @@
 
 Nicio versiune nu e publicată. Fiecare etapă e un PR separat, neîmbinat până la aprobarea lui Adrian.
 
+## AIW-06.1 — Import din cont, modul gratuit, reparații după testul pe iPhone (PR separat, ciornă)
+- **Tabul Lansator devine Import:** conversațiile exportate din contul tău de ChatGPT sau Claude devin chaturi ale proiectului, pe care le continui în Chat. Fișierul e citit doar pe dispozitiv.
+- **Modul gratuit:** GPT-OSS 20B prin serviciul public Pollinations, fără cont și fără cheie; comutare automată când se termină creditul Puter (cu acordul cerut o dată).
+- **Reparații:**
+  - foaia Cont se închide;
+  - estimarea de tokeni nu mai stă peste caseta de mesaj;
+  - titlurile nu mai sunt tăiate;
+  - sesiunile proiectelor din coș nu mai apar;
+  - linkul spre Puter a fost scos.
+- **CSP:** în plus exact `https://text.pollinations.ai`.
+
 ## AIW-06 — Chat AI în aplicație + interfața nouă (PR separat, ciornă)
 - **Tab nou „Chat”:** discuți cu un model AI direct în aplicație. Te conectezi o singură dată la Puter (cont gratuit, fără chei); fiecare mesaj se plătește din contul tău Puter, nu prin aplicație.
 - **Memoria proiectului ca context;** propunerile modelului trec prin aceeași revizuire. Memoria oficială se schimbă tot doar prin decizia ta.

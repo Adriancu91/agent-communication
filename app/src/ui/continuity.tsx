@@ -351,7 +351,8 @@ export function ContinuityScreen(): JSX.Element {
   const { sessions, loading } = useSessions();
   const { projects } = useProjects();
   const name = new Map(projects.map((p) => [p.id, p]));
-  const visible = sessions.filter((s) => name.has(s.projectId));
+  // sessions of a project in the trash are hidden (they come back if the project is restored)
+  const visible = sessions.filter((s) => name.has(s.projectId) && !name.get(s.projectId)!.deletedAt);
   const open = visible.filter((s) => s.status === "open");
   const closed = visible.filter((s) => s.status === "closed");
   const row = (s: Session) => (
@@ -359,7 +360,7 @@ export function ContinuityScreen(): JSX.Element {
       <a class="row-main" href={sessionUrl(s.id)}>
         <span class="row-name">{assistantName(s)} · {name.get(s.projectId)!.name}</span>
         {s.task && <span class="row-desc">{s.task}</span>}
-        <span class="row-meta">{t("updatedOn")} {date(s.updatedAt)}{name.get(s.projectId)!.deletedAt ? ` · ${t("importInTrash")}` : ""}</span>
+        <span class="row-meta">{t("updatedOn")} {date(s.updatedAt)}</span>
       </a>
     </li>
   );

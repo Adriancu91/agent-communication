@@ -260,7 +260,6 @@ function checkSessionRecord(x: unknown, projectId: string): Session {
     throw new ArchiveError("invalidRecord", "session provider");
   }
   if (namedProvider(x.provider) !== (x.providerName !== "")) throw new ArchiveError("invalidRecord", "session provider");
-  if (x.provider === "inapp" && x.task !== "") throw new ArchiveError("invalidRecord", "session task");
   if (typeof x.task !== "string" || charCount(x.task) > TASK_MAX || CONTROL.test(x.task)) throw new ArchiveError("invalidRecord", "session task");
   if (x.status !== "open" && x.status !== "closed") throw new ArchiveError("invalidRecord", "session status");
   if (x.continues !== null && !isSessionId(x.continues)) throw new ArchiveError("invalidRecord", "session continues");

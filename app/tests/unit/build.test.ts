@@ -21,9 +21,11 @@ describe.runIf(built)("built app (run `npm run build` first)", () => {
     expect(csp).toContain("default-src 'self'");
     expect(csp).toContain("connect-src 'self'");
     expect(csp).toContain("object-src 'none'");
-    // AIW-06 (approved by the owner): the in-app chat may reach exactly Puter's API, nothing else
-    expect(/connect-src ([^;]+)/.exec(csp)?.[1].trim()).toBe("'self' https://api.puter.com wss://api.puter.com");
-    expect(csp.replace(" https://api.puter.com wss://api.puter.com", "")).not.toMatch(/unsafe-inline|unsafe-eval|\*|https?:|wss?:/);
+    // AIW-06 (approved by the owner): the in-app chat may reach exactly Puter's API and, AIW-06.1 (asked by the
+    // owner), the free Pollinations text service; nothing else
+    const allowed = " https://api.puter.com wss://api.puter.com https://text.pollinations.ai";
+    expect(/connect-src ([^;]+)/.exec(csp)?.[1].trim()).toBe("'self'" + allowed);
+    expect(csp.replace(allowed, "")).not.toMatch(/unsafe-inline|unsafe-eval|\*|https?:|wss?:/);
   });
 
   it("contains no paid API address and no external script, font or tracker", () => {
@@ -56,9 +58,20 @@ describe.runIf(built)("built app (run `npm run build` first)", () => {
   });
 
   it("the app code makes no network calls of its own (only the offline worker reads its own files)", () => {
+    // AIW-06.1 (asked by the owner): the chat's free mode is the one exception — a separate file, loaded only
+    // when the free model is used, whose only address is the free Pollinations text service
+    let free = 0;
     for (const f of all(join(DIST, "assets")).filter((p) => p.endsWith(".js"))) {
-      expect(readFileSync(f, "utf8"), f).not.toMatch(/\bfetch\(|XMLHttpRequest|WebSocket|sendBeacon|EventSource|RTCPeerConnection|importScripts/);
+      const code = readFileSync(f, "utf8");
+      if (code.includes("https://text.pollinations.ai/openai")) {
+        free++;
+        expect(code.match(/https?:\/\/[a-z0-9.-]+/gi)?.filter((u) => u !== "https://text.pollinations.ai"), f).toEqual([]);
+        expect(code, f).not.toMatch(/XMLHttpRequest|WebSocket|sendBeacon|EventSource|RTCPeerConnection|importScripts/);
+        continue;
+      }
+      expect(code, f).not.toMatch(/\bfetch\(|XMLHttpRequest|WebSocket|sendBeacon|EventSource|RTCPeerConnection|importScripts/);
     }
+    expect(free).toBe(1);
   });
 
   it("the offline worker ignores Vary (servers send Vary: Origin; without this, offline loads fail)", () => {
