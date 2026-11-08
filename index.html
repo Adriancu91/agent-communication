@@ -2,10 +2,11 @@
 <html lang="ro">
   <head>
     <meta charset="utf-8" />
-    <!-- Security: the app may only talk to its own origin. No API, no tracker, no external font. -->
+    <!-- Security: the app talks only to its own origin, plus Puter's API for the in-app chat (AIW-06, used
+         only when the user opens the chat and signs in to their own Puter account). No tracker, no external font. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://api.puter.com wss://api.puter.com; worker-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <meta name="referrer" content="no-referrer" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -20,8 +21,8 @@
     <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
     <title>AI Workspace</title>
-    <script type="module" crossorigin src="./assets/index-CdzaLWh8.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CM5B52Se.css">
+    <script type="module" crossorigin src="./assets/index-DpV7SyAd.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CXUT0bgK.css">
   </head>
   <body>
     <div id="app"></div>
