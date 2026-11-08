@@ -28,7 +28,9 @@ describe("module boundaries", () => {
       for (const m of readFileSync(f, "utf8").matchAll(/(?:import|export)[^"']*?from\s*["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']/g)) {
         const spec = m[1] ?? m[2];
         if (!spec.startsWith(".")) {
-          if (!["preact", "preact/hooks"].includes(spec)) bad.push(`${relative(SRC, f)} → ${spec} (bibliotecă nedeclarată)`);
+          // AIW-07: pdf.js (Apache-2.0), only in ui/files.ts, for reading attached PDFs on the device
+          const libs = own === "ui" && relative(SRC, f) === join("ui", "files.ts") ? ["pdfjs-dist", "pdfjs-dist/build/pdf.worker.min.mjs?url"] : [];
+          if (![...["preact", "preact/hooks"], ...libs].includes(spec)) bad.push(`${relative(SRC, f)} → ${spec} (bibliotecă nedeclarată)`);
           continue;
         }
         const target = relative(SRC, resolve(f, "..", spec)).split(sep)[0];

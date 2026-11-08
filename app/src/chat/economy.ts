@@ -207,9 +207,21 @@ export function buildMessages(system: string, earlier: Pick<Exchange, "kind" | "
     }
     else out.push(m);
   };
-  for (const x of window) push(x.kind === "ask" ? { role: "user", content: x.text } : { role: "assistant", content: withoutProposals(x.text, lang) });
+  // AIW-07: a file's text travels again only with the latest message that had files; older ones keep a short note
+  const lastWithFiles = [...window].reverse().find((x) => x.kind === "ask" && FILE_BLOCK.test(x.text));
+  for (const x of window) {
+    if (x.kind === "ask") push({ role: "user", content: x === lastWithFiles ? x.text : foldFiles(x.text, lang) });
+    else push({ role: "assistant", content: withoutProposals(x.text, lang) });
+  }
   push({ role: "user", content: question });
   return out;
+}
+
+/** A file's text inside a saved question (see attachments.ts: "Fișier atașat: name\n```\n…\n```"). */
+const FILE_BLOCK = /\n\n(Fișier atașat|Attached file): ([^\n]+)\n```\n[\s\S]*?\n```(?=\n\n|$)/;
+export function foldFiles(text: string, lang: PackLang): string {
+  const note = lang === "ro" ? "textul a fost trimis mai devreme" : "its text was sent earlier";
+  return text.replace(new RegExp(FILE_BLOCK.source, "g"), (_m, label: string, name: string) => `\n\n[${label}: ${name} — ${note}]`);
 }
 
 /** Characters of a list of messages (for the estimate shown before sending). */

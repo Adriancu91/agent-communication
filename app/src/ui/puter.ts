@@ -3,7 +3,7 @@
 // chat is opened. The user signs in to their own Puter account in Puter's window; the app never sees a
 // password or a key. Each message is paid from that account (Puter gives new accounts some free credit).
 // Only https://api.puter.com is allowed to be contacted (Content-Security-Policy in index.html).
-import type { ChatMessage } from "../chat";
+import type { WireMessage } from "../chat";
 
 interface PuterUsageDetails { inputTokens: number; outputTokens: number }
 interface PuterChunk { type: string; text?: string; usage?: Record<string, number>; usageDetails?: PuterUsageDetails; error?: unknown }
@@ -17,7 +17,7 @@ interface PuterGlobal {
     getUser(): Promise<{ username?: string }>;
     getMonthlyUsage?(): Promise<{ allowanceInfo?: { remaining?: number; monthUsageAllowance?: number; unit?: string } }>;
   };
-  ai: { chat(messages: ChatMessage[], options: Record<string, unknown>): Promise<PuterResponse | AsyncIterable<PuterChunk>> };
+  ai: { chat(messages: WireMessage[], options: Record<string, unknown>): Promise<PuterResponse | AsyncIterable<PuterChunk>> };
 }
 
 declare global {
@@ -154,7 +154,7 @@ const usageOf = (u: PuterUsageDetails | undefined) =>
  * One call to the model, streamed: `onText` receives the answer so far as it arrives.
  * Stopping (signal) keeps nothing: the partial answer is not saved.
  */
-export async function chat(messages: ChatMessage[], options: Record<string, unknown>, onText: (soFar: string) => void, signal?: AbortSignal): Promise<ChatResult> {
+export async function chat(messages: WireMessage[], options: Record<string, unknown>, onText: (soFar: string) => void, signal?: AbortSignal): Promise<ChatResult> {
   const p = await loadPuter();
   if (!p.auth.isSignedIn()) throw new PuterError("signin");
   let text = "";

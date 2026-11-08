@@ -551,3 +551,42 @@ button.pill { cursor: pointer; font: inherit; font-size: 13px; font-weight: 600;
 .row-main.conv { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
 .row-main.conv input { width: 22px; height: 22px; margin-top: 2px; flex: none; accent-color: var(--accent); }
 .row-main.conv > span { display: flex; flex-direction: column; min-width: 0; }
+/* AIW-07: attached files and voice */
+.attach, .mic {
+  flex: none; width: 44px; height: 48px; display: grid; place-items: center; border-radius: 14px; cursor: pointer;
+  color: var(--muted); background: transparent; border: 0; padding: 0;
+}
+.attach:hover, .mic:hover { color: var(--accent); background: var(--accent-soft); }
+.attach.busy { opacity: 0.5; animation: blink 1s steps(1) infinite; }
+.mic.on { color: #fff; background: var(--danger); box-shadow: 0 0 0 4px rgba(208, 38, 63, 0.2); }
+.files { list-style: none; margin: 0 0 6px; padding: 0; display: flex; gap: 6px; overflow-x: auto; }
+.file-chip {
+  flex: none; display: flex; align-items: center; gap: 6px; max-width: 220px; padding: 4px 4px 4px 6px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); font-size: 13px;
+}
+.file-chip img { width: 36px; height: 36px; object-fit: cover; border-radius: 8px; }
+.file-ico { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 8px; background: var(--grad); color: #fff; font-size: 10px; font-weight: 700; }
+.file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.file-x { flex: none; width: 44px; height: 44px; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.ask-files { margin-top: 8px; font-size: 14px; }
+.ask-files summary { cursor: pointer; opacity: 0.9; min-height: 32px; }
+.ask-files pre { white-space: pre-wrap; max-height: 240px; overflow: auto; font-size: 12px; margin: 6px 0 0; }
+.speak { min-height: var(--tap); }
+.voice-bar { display: flex; align-items: center; gap: 8px; padding: 0 4px 4px; font-size: 13px; color: var(--muted); }
+.voice-bar .live { color: var(--danger); font-weight: 600; }
+/* AIW-07: formatted answers and the code agent */
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 8px; }
+.md ul, .md ol { margin: 4px 0 8px; padding-left: 22px; }
+.md li { margin: 2px 0; }
+.md-h { margin: 12px 0 6px; font-size: 16px; line-height: 1.3; }
+h2.md-h { font-size: 18px; }
+.md code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; background: var(--surface-2); padding: 1px 5px; border-radius: 6px; }
+.md-code { margin: 8px 0; }
+.md-code pre { margin: 0; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; overflow-x: auto; white-space: pre; font-size: 13px; line-height: 1.45; max-height: 360px; }
+.md-code pre code { background: none; padding: 0; }
+.msg.ai .bubble { white-space: normal; }
+.code-tools { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.preview-frame { width: 100%; height: min(62vh, 560px); border: 1px solid var(--line); border-radius: 14px; background: #fff; }
+#code-preview { max-width: 900px; }

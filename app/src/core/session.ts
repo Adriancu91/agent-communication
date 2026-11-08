@@ -44,7 +44,7 @@ export interface Session {
 export type ExchangeKind = "sent" | "reply" | "note" | "ask";
 
 /** AIW-06.1: a conversation imported from the user's own account is a chat whose "model" names its origin. */
-export const IMPORTED: Record<string, string> = { "import:chatgpt": "ChatGPT ⇣", "import:claude": "Claude ⇣" };
+export const IMPORTED: Record<string, string> = { "import:chatgpt": "ChatGPT ⇣", "import:claude": "Claude ⇣", council: "Consiliu ⚖" };
 
 /** Providers whose name is given by the user / the app (the assistant for "other", the model for "inapp"). */
 export const namedProvider = (p: string): boolean => p === "other" || p === "inapp";

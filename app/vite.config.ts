@@ -12,7 +12,9 @@ function serviceWorker(): Plugin {
     apply: "build",
     generateBundle(_options, bundle) {
       // the chat's Puter.js is large and useless offline: fetched only when the chat is opened, not pre-cached
-      const files = Object.keys(bundle).filter((f) => !f.endsWith(".map") && !f.startsWith("vendor/")).sort();
+      // AIW-07: pdf.js (worker, decoders) is large and only needed to read an attached PDF: fetched then, not pre-cached
+      const lazy = (f: string) => f.startsWith("vendor/") || f.startsWith("pdfjs/") || /^assets\/pdf(\.worker\.min)?-[\w-]+\.m?js$/.test(f);
+      const files = Object.keys(bundle).filter((f) => !f.endsWith(".map") && !lazy(f)).sort();
       const assets = ["./", ...files.map((f) => `./${f}`), ...PUBLIC_FILES];
       const version = createHash("sha256").update(JSON.stringify(assets)).update(
         Object.values(bundle).map((c) => ("code" in c ? c.code : String(c.source))).join(""),
@@ -42,7 +44,9 @@ function thirdPartyLicenses(): Plugin {
       });
       const head = "AI Workspace — third-party software included in this app / programe terțe incluse în aplicație\n";
       const vendored = readFileSync(new URL("./vendor/puter/LICENSES.txt", import.meta.url), "utf8").trim() + "\n";
-      this.emitFile({ type: "asset", fileName: "licenses.txt", source: [head, ...parts, vendored].join("\n" + "-".repeat(60) + "\n") });
+      const wasm = ["LICENSE_JBIG2", "LICENSE_PDFJS_JBIG2", "LICENSE_OPENJPEG", "LICENSE_PDFJS_OPENJPEG", "LICENSE_QCMS", "LICENSE_PDFJS_QCMS"]
+        .map((f) => `pdf.js decoders — ${f}\n\n` + readFileSync(new URL(`./node_modules/pdfjs-dist/wasm/${f}`, import.meta.url), "utf8").trim() + "\n");
+      this.emitFile({ type: "asset", fileName: "licenses.txt", source: [head, ...parts, vendored, ...wasm].join("\n" + "-".repeat(60) + "\n") });
     },
   };
 }
@@ -74,6 +78,30 @@ function puterVendor(): Plugin {
   };
 }
 
+/**
+ * AIW-07: pdf.js image decoders for scanned PDFs (JBIG2 from PDFium, BSD; OpenJPEG, BSD; qcms, MIT), served
+ * from the app's own address as pdfjs/wasm/. The JavaScript engine for PDF scripts (quickjs) is not shipped:
+ * scripts inside PDFs are never run.
+ */
+const PDFJS_WASM = ["jbig2.wasm", "jbig2_nowasm_fallback.js", "openjpeg.wasm", "openjpeg_nowasm_fallback.js", "qcms_bg.wasm"];
+function pdfjsWasm(): Plugin {
+  const dir = new URL("./node_modules/pdfjs-dist/wasm/", import.meta.url);
+  return {
+    name: "aiw-pdfjs-wasm",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const m = req.url && /\/pdfjs\/wasm\/([\w.]+)(\?|$)/.exec(req.url);
+        if (!m || !PDFJS_WASM.includes(m[1])) return next();
+        res.setHeader("Content-Type", m[1].endsWith(".wasm") ? "application/wasm" : "text/javascript");
+        res.end(readFileSync(new URL(m[1], dir)));
+      });
+    },
+    generateBundle() {
+      for (const f of PDFJS_WASM) this.emitFile({ type: "asset", fileName: `pdfjs/wasm/${f}`, source: readFileSync(new URL(f, dir)) });
+    },
+  };
+}
+
 // Files copied from public/ (Vite does not list them in the bundle).
 const PUBLIC_FILES = [
   "./manifest.webmanifest",
@@ -81,6 +109,7 @@ const PUBLIC_FILES = [
   "./icons/icon-192.png",
   "./icons/icon-512.png",
   "./icons/apple-touch-icon.png",
+  "./sandbox.html", // AIW-07: the isolated preview of the code agent
 ];
 
 const SW_TEMPLATE = `// Generated at build time. Same-origin only; never caches or contacts anything else.
@@ -123,7 +152,7 @@ export default defineConfig({
   base: "./",
   // AIW_BUILD_TAG is used only by the update test, to build a "newer" version of the same app
   define: { __APP_VERSION__: JSON.stringify(pkg.version + (process.env.AIW_BUILD_TAG ? `+${process.env.AIW_BUILD_TAG}` : "")) },
-  plugins: [puterVendor(), thirdPartyLicenses(), serviceWorker()],
+  plugins: [puterVendor(), pdfjsWasm(), thirdPartyLicenses(), serviceWorker()],
   oxc: { jsx: { runtime: "automatic", importSource: "preact" } },
   build: { target: "es2020", sourcemap: false, assetsInlineLimit: 0, modulePreload: { polyfill: false } },
   test: { include: ["tests/unit/**/*.test.ts"], environment: "node" },

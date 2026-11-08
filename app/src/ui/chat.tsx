@@ -9,13 +9,17 @@ import { parseReply } from "../continuity";
 import {
   buildMessages, builtInPrompts, callOptions, cleanEconomy, cleanMyPrompts, DEFAULT_ECONOMY, DEFAULT_MODEL, estimateCost,
   tokensForChars, findModel, HISTORY_CHOICES, isModelId, messagesChars, MODELS, MY_PROMPT_LABEL_MAX, MY_PROMPT_TEXT_MAX, MY_PROMPTS_MAX,
-  FREE_MODEL, OUTPUT_CHOICES, PRESETS, viaOf, type Via, presetOf, priceHint, systemPrompt, type AnswerStyle, type ContextMode, type Economy, type MyPrompt, type PresetId,
+  FREE_MODEL, OUTPUT_CHOICES, PRESETS, viaOf, type Via, COUNCIL, COUNCIL_MAX, COUNCIL_MIN, cleanCouncil, councilText, judgeMessages, memberMessages, nameOf, type Council, type MemberAnswer, type ChatMessage, type WireMessage, messageWithFiles, imagesOf, withImages, seesImages, IMAGE_TOKENS, MAX_ATTACHMENTS, type Attachment, presetOf, priceHint, systemPrompt, type AnswerStyle, type ContextMode, type Economy, type MyPrompt, type PresetId,
 } from "../chat";
 import { ReplyDialog, Segmented, copyText, useSessions } from "./continuity";
 import { errorKey, lastProject, rememberProject, sessionStore, useMemory, useProjects } from "./data";
 import { fill, useDate, useI18n, type Key } from "./i18n";
-import { IconSend, IconSpark, IconStop } from "./icons";
+import { IconClip, IconMic, IconSend, IconSpark, IconStop } from "./icons";
+import { ACCEPT, FileError, readAttachment } from "./files";
+import { Markdown } from "./markdown";
 import * as puter from "./puter";
+import { CodeTools, PreviewDialog } from "./runner";
+import * as voice from "./voice";
 import { Dialog, toast } from "./widgets";
 
 export const chatUrl = (projectId?: string, sessionId?: string) =>
@@ -34,6 +38,11 @@ interface ChatSettings {
   autoFree: boolean;
   /** the user agreed (once) that messages may go to the free public service */
   freeConsent: boolean;
+  /** AIW-07: read every answer aloud */
+  readAloud: boolean;
+  /** AIW-07: the council of models (on = every question goes to all members, then to the judge) */
+  councilOn: boolean;
+  council: Council;
 }
 
 function readJson(key: string): unknown {
@@ -54,7 +63,7 @@ function writeJson(key: string, value: unknown): void {
 }
 function readSettings(): ChatSettings {
   const r = (readJson(SETTINGS) ?? {}) as Record<string, unknown>;
-  return { model: isModelId(r.model) ? r.model : DEFAULT_MODEL, economy: cleanEconomy(r.economy), autoFree: r.autoFree !== false, freeConsent: r.freeConsent === true };
+  return { model: isModelId(r.model) ? r.model : DEFAULT_MODEL, economy: cleanEconomy(r.economy), autoFree: r.autoFree !== false, freeConsent: r.freeConsent === true, readAloud: r.readAloud === true, councilOn: r.councilOn === true, council: cleanCouncil(r.council) };
 }
 
 /** An answer with memory proposals waits here (on this device) until the user reviews it. */
@@ -186,12 +195,24 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
   const [account, refreshAccount] = useAccount();
 
   const [input, setInput] = useState("");
+  // AIW-07: files attached to the next message (read on the device)
+  const [files, setFiles] = useState<Attachment[]>([]);
+  const [reading, setReading] = useState(false);
+  // AIW-07: voice — dictation, reading answers aloud, and the hands-free conversation (listen → send → read → listen)
+  const [listening, setListening] = useState(false);
+  const [handsFree, setHandsFree] = useState(false);
+  const [speaking, setSpeaking] = useState<string | null>(null);
+  const hearing = useRef<voice.Listening | null>(null);
+  const handsFreeRef = useRef(false);
+  handsFreeRef.current = handsFree;
   const [busy, setBusy] = useState(false);
   const [streaming, setStreaming] = useState<string | null>(null);
   const [failure, setFailure] = useState<{ key: Key; sessionId: string; askId: string } | null>(null);
   const [usage, setUsage] = useState<Record<string, { input: number; output: number; cut: boolean; model: string }>>({});
   const [pending, setPending] = useState<Pending | null>(null);
-  const [sheet, setSheet] = useState<"model" | "eco" | "prompts" | "history" | "account" | "review" | null>(null);
+  // AIW-07: the code agent's preview (a page of code from an answer, run in isolation)
+  const [runHtml, setRunHtml] = useState<string | null>(null);
+  const [sheet, setSheet] = useState<"model" | "eco" | "prompts" | "history" | "account" | "review" | "council" | null>(null);
   const abort = useRef<AbortController | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
 
@@ -242,23 +263,30 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
     [project, entries, links, lang, eco, model],
   );
   const thread = steps ?? [];
-  const preview = useMemo(() => buildMessages(system.text, thread, input || " ", eco, lang), [system.text, thread, input, eco, lang]);
-  const tokens = tokensForChars(messagesChars(preview));
+  const draft = files.length ? messageWithFiles(input || " ", files, lang) : input || " ";
+  const preview = useMemo(() => buildMessages(system.text, thread, draft, eco, lang), [system.text, thread, draft, eco, lang]);
+  const tokens = tokensForChars(messagesChars(preview)) + imagesOf(files).length * IMAGE_TOKENS;
   // the same question with every saving switched off, for the "you save ~N%" line
   const fullTokens = useMemo(() => {
     const full = systemPrompt(project, entries, links, { lang, economy: PRESETS.quality, assistant: modelInfo?.name ?? model, maxChars: 24000, date: "", formatDate });
-    return tokensForChars(messagesChars(buildMessages(full.text, thread, input || " ", PRESETS.quality, lang)));
-  }, [project, entries, links, lang, thread, input, model]);
+    return tokensForChars(messagesChars(buildMessages(full.text, thread, draft, PRESETS.quality, lang))) + imagesOf(files).length * IMAGE_TOKENS;
+  }, [project, entries, links, lang, thread, draft, model]);
   const saved = fullTokens > 0 ? Math.max(0, Math.round((1 - tokens / fullTokens) * 100)) : 0;
-  const via: Via = viaOf(model);
-  const cost = via === "free" ? 0 : estimateCost(model, tokens, eco.maxOutput || 800);
+  const via: Via = settings.councilOn ? (settings.council.members.every((m) => viaOf(m) === "free") ? "free" : "puter") : viaOf(model);
+  const out = eco.maxOutput || 800;
+  const cost = settings.councilOn
+    ? [...settings.council.members, settings.council.judge].reduce<number | null>((sum, m) => {
+        const one = viaOf(m) === "free" ? 0 : estimateCost(m, tokens + (m === settings.council.judge ? out * settings.council.members.length : 0), out);
+        return sum === null || one === null ? null : sum + one;
+      }, 0)
+    : via === "free" ? 0 : estimateCost(model, tokens, out);
 
   const signedIn = account.state === "in";
   // the free model needs no account; a Puter model needs the user signed in
   const reachable = via === "free" || signedIn;
   // everything a message needs is loaded: the account (or free mode), the memory, the chats and this chat's steps
   const ready = reachable && !busy && !pending && !memLoading && !sessionsLoading && steps !== null;
-  const canSend = ready && !!input.trim();
+  const canSend = ready && !reading && (!!input.trim() || files.length > 0);
 
   const connect = async () => {
     if (account.state === "loading") return;
@@ -275,17 +303,50 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
    * Everything the call uses (model, settings, system prompt) is passed in, as it was when the question
    * was recorded: the answer is saved with exactly the context it was given.
    */
-  const callModel = async (sid: string, askId: string, question: string, earlier: Exchange[], c: { model: string; via: Via; reasoning: boolean; eco: Economy; system: typeof system }) => {
+  /** One model, one call (Puter or the free service), streamed. */
+  const callOne = async (model: string, messages: WireMessage[], eco: Economy, onText: (so: string) => void, signal: AbortSignal) =>
+    viaOf(model) === "free"
+      ? (await import("./freeai")).chatFree(messages, onText, signal) // loaded only when used
+      : puter.chat(messages, callOptions(model, eco, !!findModel(model)?.reasoning), onText, signal);
+
+  /**
+   * AIW-07: the council — the members answer in parallel (shown as they come), then the judge compares them.
+   * A member that fails is shown as such; with fewer than two answers there is nothing to compare.
+   */
+  const runCouncil = async (messages: ChatMessage[], images: string[], question: string, c: { eco: Economy; system: typeof system; council: Council }, signal: AbortSignal) => {
+    const live: Record<string, string> = {};
+    const show = (judgeText?: string) => setStreaming(councilText(c.council.members.map((m) => ({ model: m, text: live[m] ?? "…" })), judgeText !== undefined ? { model: c.council.judge, text: judgeText || "…" } : null, lang));
+    const asked = withImages(memberMessages(messages, lang), images);
+    const results = await Promise.allSettled(c.council.members.map((m) => callOne(m, asked, c.eco, (so) => ((live[m] = so), show()), signal)));
+    if (signal.aborted) throw new puter.PuterError("aborted");
+    const answers: MemberAnswer[] = c.council.members.map((m, i) => ({ model: m, text: results[i].status === "fulfilled" ? (results[i] as PromiseFulfilledResult<{ text: string }>).value.text : null }));
+    const ok = answers.filter((a) => a.text);
+    if (ok.length === 0) throw (results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason;
+    if (ok.length < 2) return { text: councilText(answers, null, lang), cut: false, usage: null };
+    try {
+      const j = await callOne(c.council.judge, judgeMessages(c.system.text, question, answers, lang), c.eco, (so) => show(so), signal);
+      return { text: councilText(answers, { model: c.council.judge, text: j.text }, lang), cut: false, usage: null };
+    } catch (e) {
+      if (signal.aborted) throw e;
+      // the answers are already paid for: they are kept, without a conclusion
+      toast({ text: t("chJudgeFailed"), error: true });
+      return { text: councilText(answers, null, lang), cut: false, usage: null };
+    }
+  };
+
+  const callModel = async (sid: string, askId: string, question: string, earlier: Exchange[], c: { model: string; via: Via; reasoning: boolean; eco: Economy; system: typeof system; council?: Council }, images: string[] = []) => {
     const ctrl = new AbortController();
     abort.current = ctrl;
     let fallback = false;
+    let spoken: string | null = null;
     setFailure(null);
     setStreaming("");
     try {
-      const messages = buildMessages(c.system.text, earlier, question, c.eco, lang);
-      const r = c.via === "free"
-        ? await (await import("./freeai")).chatFree(messages, (so) => setStreaming(so), ctrl.signal) // loaded only when used
-        : await puter.chat(messages, callOptions(c.model, c.eco, c.reasoning), (so) => setStreaming(so), ctrl.signal);
+      // pictures go only with this call (they are not saved; the saved question names them)
+      const base = buildMessages(c.system.text, earlier, question, c.eco, lang);
+      const r = c.model === COUNCIL
+        ? await runCouncil(base, images, question, { eco: c.eco, system: c.system, council: c.council ?? settingsRef.current.council }, ctrl.signal)
+        : await callOne(c.model, withImages(base, images), c.eco, (so) => setStreaming(so), ctrl.signal);
       const cut = r.cut || (c.via === "puter" && c.eco.maxOutput > 0 && !!r.usage && r.usage.output >= c.eco.maxOutput * (c.reasoning ? 2 : 1));
       const parsed = parseReply(r.text, c.system.refs, entries);
       // proposals are never dropped: with proposals off, only a real proposals block is offered for review
@@ -299,9 +360,10 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
       }
       if (r.usage || cut) setUsage((u) => ({ ...u, [askId]: { input: r.usage?.input ?? 0, output: r.usage?.output ?? 0, cut, model: c.model } }));
       if (c.via === "puter") void refreshAccount();
+      if ((settingsRef.current.readAloud || handsFreeRef.current) && alive.current && voice.canSpeak()) spoken = r.text;
     } catch (e) {
       // Puter credit finished: the same question continues on the free model, if the user allows it
-      if (e instanceof puter.PuterError && e.problem === "funds" && c.via === "puter" && settingsRef.current.autoFree) fallback = true;
+      if (e instanceof puter.PuterError && e.problem === "funds" && c.via === "puter" && c.model !== COUNCIL && settingsRef.current.autoFree) fallback = true;
       else {
         const key = e instanceof puter.PuterError ? puterKey(e, c.via) : errorKey(e);
         setFailure({ key, sessionId: sid, askId });
@@ -312,9 +374,17 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
       setStreaming(null);
       setBusy(false);
     }
+    if (spoken !== null) {
+      setSpeaking("auto");
+      await voice.speak(stripBlock(spoken), lang);
+      setSpeaking((cur) => (cur === "auto" ? null : cur));
+      // hands-free: after the answer is read, listen for the next question (with the screen's latest state)
+      if (handsFreeRef.current && alive.current && shown.current === sid) listenRef.current(true);
+    }
     if (fallback) {
       // only while this chat is still on screen; otherwise the credit error is shown when the user comes back
-      if (!alive.current || shown.current !== sid) return setFailure({ key: "chErr_funds", sessionId: sid, askId });
+      // pictures are not saved (and the free model cannot see them): the credit error is shown instead
+      if (!alive.current || shown.current !== sid || hadPictures(question)) return setFailure({ key: "chErr_funds", sessionId: sid, askId });
       if (!settingsRef.current.freeConsent) return setConsent({ question, sid, askId });
       await continueFree(question, sid);
     }
@@ -328,13 +398,20 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
   };
 
   const send = async (text = input, auto?: { model: string; from: string }) => {
-    const question = text.trim();
-    const model = auto?.model ?? settings.model;
+    const attached = auto ? [] : files;
+    const typed = text.trim();
+    // the files go with the question (their text is saved with it; photos only by name)
+    const question = attached.length ? messageWithFiles(typed || t("chFilesOnly"), attached, lang) : typed;
+    const images = imagesOf(attached);
+    const model = auto?.model ?? (settings.councilOn ? COUNCIL : settings.model);
     const modelInfo = findModel(model);
+    const members = model === COUNCIL ? settings.council.members : [model];
     // the automatic switch to the free model (credit finished) does not need the Puter account
     if (!question || !(ready || (auto && !pending && alive.current))) return;
+    if (images.length && !members.every(seesImages)) return toast({ text: t("chNoVision"), error: true });
+    if (model === COUNCIL && !signedIn && members.some((m) => viaOf(m) === "puter")) return toast({ text: t("chErr_signin"), error: true });
     setBusy(true);
-    const c = { model, via: viaOf(model), reasoning: !!modelInfo?.reasoning, eco, system };
+    const c = { model, via: model === COUNCIL ? ("puter" as Via) : viaOf(model), reasoning: !!modelInfo?.reasoning, eco, system, council: settings.council };
     try {
       // a chat belongs to one model: another model (or a closed chat) continues in a new chat;
       // after the switch to free, it continues the chat that holds the unanswered question
@@ -350,12 +427,16 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
         setInput("");
         if (box.current) box.current.style.height = "";
       }
-      await callModel(s.id, ask.id, question, thread, c);
+      if (attached.length) setFiles([]);
+      await callModel(s.id, ask.id, question, thread, c, images);
     } catch (e) {
       toast({ text: t(errorKey(e)), error: true });
       setBusy(false);
     }
   };
+
+  const sendRef = useRef(send);
+  sendRef.current = send;
 
   /**
    * The same question again, only if it would go out exactly as recorded (same chat model, same context
@@ -367,7 +448,15 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
     const ask = thread[i];
     const chat = sessions.find((x) => x.id === failure.sessionId);
     if (!ask || !chat) return setFailure(null);
-    const same = chat.providerName === model && chat.status === "open" && ask.pack?.sha256 === (await sha256(system.text));
+    const current = settings.councilOn ? COUNCIL : model;
+    const same = chat.providerName === current && chat.status === "open" && ask.pack?.sha256 === (await sha256(system.text));
+    if (hadPictures(ask.text)) {
+      // pictures are not saved: the question goes back into the box, to be sent with the photo attached again
+      setFailure(null);
+      setInput(questionOnly(ask.text));
+      toast({ text: t("chRetryPictures") });
+      return;
+    }
     if (!same) {
       setFailure(null);
       setInput(ask.text);
@@ -375,13 +464,69 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
       return;
     }
     setBusy(true);
-    await callModel(failure.sessionId, failure.askId, ask.text, thread.slice(0, i), { model, via, reasoning: !!modelInfo?.reasoning, eco, system });
+    await callModel(failure.sessionId, failure.askId, ask.text, thread.slice(0, i), { model: current, via: current === COUNCIL ? "puter" : via, reasoning: !!modelInfo?.reasoning, eco, system, council: settings.council });
   };
 
   const choose = (id: string | null) => {
     setChosen(id);
     setFailure(null);
     history.replaceState(null, "", chatUrl(project.id, id ?? undefined));
+  };
+
+  /** Dictation: the words appear in the box; in the hands-free mode the message is sent at the pause. */
+  const startListening = (auto = false) => {
+    if (hearing.current) return;
+    voice.stopSpeaking();
+    const before = auto ? "" : input.trim();
+    setListening(true);
+    hearing.current = voice.listen(lang, (heard) => setInput(before ? before + " " + heard : heard), (heard, problem) => {
+      hearing.current = null;
+      setListening(false);
+      if (problem && problem !== "noSpeech") {
+        toast({ text: t(`chVoiceErr_${problem}` as Key), error: true });
+        setHandsFree(false); // no listening happens any more: the mode does not stay shown as on
+        return;
+      }
+      const text = before ? (before + " " + heard).trim() : heard;
+      // the latest send (not the one of the render that started listening): current chat, history, files, review state
+      if (handsFreeRef.current && text) void sendRef.current(text);
+      else if (handsFreeRef.current && !text) setHandsFree(false); // silence (or nothing understood) ends the conversation
+    });
+  };
+  const stopListening = () => hearing.current?.stop();
+  const toggleHandsFree = () => {
+    if (handsFree) {
+      setHandsFree(false);
+      stopListening();
+      voice.stopSpeaking();
+      return;
+    }
+    setHandsFree(true);
+    handsFreeRef.current = true;
+    voice.unlockSpeech(); // from this tap: lets an iPhone read the answers aloud later
+    startListening(true);
+  };
+  const listenRef = useRef(startListening);
+  listenRef.current = startListening;
+  useEffect(() => () => { hearing.current?.stop(); voice.stopSpeaking(); }, []);
+
+  /** Reads the chosen files on the device and adds them to the next message. */
+  const addFiles = async (list: File[]) => {
+    if (!list.length) return;
+    const room = MAX_ATTACHMENTS - files.length;
+    if (room <= 0) return toast({ text: t("chTooManyFiles"), error: true });
+    setReading(true);
+    const added: Attachment[] = [];
+    for (const f of list.slice(0, room)) {
+      try {
+        added.push(await readAttachment(f));
+      } catch (e) {
+        toast({ text: `${f.name}: ${t(e instanceof FileError ? (`chFileErr_${e.problem}` as Key) : "chFileErr_unreadable")}`, error: true });
+      }
+    }
+    if (list.length > room) toast({ text: t("chTooManyFiles"), error: true });
+    setFiles((cur) => [...cur, ...added].slice(0, MAX_ATTACHMENTS));
+    setReading(false);
   };
 
   const usePrompt = (text: string, open?: boolean) => {
@@ -423,9 +568,15 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
           </select>
         </label>
         <div class="field"><span>{t("chModel")}</span>
-          <button type="button" class="pill" data-action="model" data-model={model} onClick={() => setSheet("model")}>
-            {modelInfo?.name ?? model} <span class="price">{priceHint(model)}</span> ▾
-          </button>
+          {settings.councilOn ? (
+            <button type="button" class="pill acc" data-action="council" data-model={COUNCIL} onClick={() => setSheet("council")}>
+              ⚖ {fill(t("chCouncilOnLabel"), { n: String(settings.council.members.length) })} ▾
+            </button>
+          ) : (
+            <button type="button" class="pill" data-action="model" data-model={model} onClick={() => setSheet("model")}>
+              {modelInfo?.name ?? model} <span class="price">{priceHint(model)}</span> ▾
+            </button>
+          )}
         </div>
       </div>
 
@@ -438,6 +589,15 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
           {signedIn ? (account.name ?? t("chPuterOn")) : account.state === "loading" ? t("loading") : t("chPuterOff")}
           {signedIn && account.credit ? ` · ${account.credit.unit === "usd" ? money(account.credit.value, lang) : k(Math.round(account.credit.value)) + " " + t("chCredits")}` : ""}
         </button>
+        {voice.canListen() && (
+          <button type="button" class={"pill" + (handsFree ? " acc" : "")} data-action="hands-free" aria-pressed={handsFree} disabled={!reachable} onClick={toggleHandsFree}>
+            🎙 {handsFree ? t("chHandsFreeOn") : t("chHandsFree")}
+          </button>
+        )}
+        {speaking === "auto" && (
+          <button type="button" class="pill acc" data-action="stop-reading" onClick={() => (voice.stopSpeaking(), setSpeaking(null))}>■ {t("chStopReading")}</button>
+        )}
+        <button type="button" class={"pill" + (settings.councilOn ? " acc" : "")} data-action="council-sheet" onClick={() => setSheet("council")}>⚖ {t("chCouncil")}</button>
         <button type="button" class="pill" data-action="prompts" onClick={() => setSheet("prompts")}>✎ {t("chPrompts")}</button>
       </div>
 
@@ -482,7 +642,7 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
             const u = usage[x.id];
             return (
               <li key={x.id} class="msg me" data-msg="ask">
-                <div class="bubble">{x.text}</div>
+                <AskBubble text={x.text} label={t("chFiles")} />
                 <div class="msg-meta">{props.date(x.createdAt)}</div>
                 {failure?.askId === x.id && (
                   <div class="msg-tools" data-failure>
@@ -499,12 +659,20 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
             const u = before ? usage[before.id] : undefined;
             return (
               <li key={x.id} class="msg ai" data-msg="reply">
-                <div class="bubble">{stripBlock(x.text)}</div>
+                <div class="bubble"><Markdown text={stripBlock(x.text)} renderCode={(b) => <CodeTools block={b} onRun={setRunHtml} />} /></div>
                 <div class="msg-meta">
                   <span>{(() => { const o = sessions.find((s) => s.id === x.sessionId); return o ? assistantName(o) : ""; })()}</span>
                   {u && u.input > 0 && <span data-usage>↑{k(u.input)} ↓{k(u.output)} {t("chTokens")}</span>}
                   {x.proposals.length > 0 && <span>{fill(t("chProposalsSaved"), { n: String(x.proposals.length) })}</span>}
                   <button type="button" class="pill small" onClick={async () => toast({ text: t((await copyText(stripBlock(x.text))) ? "chCopied" : "chCopyFailed") })}>{t("chCopy")}</button>
+                  {voice.canSpeak() && (
+                    <button type="button" class="pill small speak" data-action="speak" onClick={async () => {
+                      if (speaking === x.id) return (voice.stopSpeaking(), setSpeaking(null));
+                      setSpeaking(x.id);
+                      await voice.speak(stripBlock(x.text), lang);
+                      setSpeaking((cur) => (cur === x.id ? null : cur));
+                    }}>{speaking === x.id ? "■" : "🔊"} {speaking === x.id ? t("chStopReading") : t("chRead")}</button>
+                  )}
                 </div>
               </li>
             );
@@ -514,7 +682,7 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
         })}
         {pending && pending.sid === session?.id && (
           <li class="msg ai" data-msg="pending">
-            <div class="bubble">{stripBlock(pending.text)}</div>
+            <div class="bubble"><Markdown text={stripBlock(pending.text)} renderCode={(b) => <CodeTools block={b} onRun={setRunHtml} />} /></div>
             <div class="proposal-card" data-pending>
               <p>{fill(t("chPendingTitle"), { n: String(countProposals(pending.text, system.refs, entries)) })}</p>
               <ul>{parseReply(pending.text, system.refs, entries).proposals.slice(0, 5).map((p) => <li key={p.key}>{p.title}</li>)}</ul>
@@ -524,7 +692,7 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
         )}
         {streaming !== null && (
           <li class="msg ai" data-msg="streaming">
-            {streaming ? <div class="bubble typing">{stripBlock(streaming)}</div> : <div class="bubble thinking" aria-label={t("chThinking")}><i /><i /><i /></div>}
+            {streaming ? <div class="bubble typing"><Markdown text={stripBlock(streaming)} /></div> : <div class="bubble thinking" aria-label={t("chThinking")}><i /><i /><i /></div>}
           </li>
         )}
       </ol>
@@ -536,15 +704,43 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
             <button key={p.id} type="button" class="chip" data-prompt={p.id} onClick={() => usePrompt(p.text, p.open)}><b>{p.icon}</b>{p.label}</button>
           ))}
         </div>
+        {files.length > 0 && (
+          <ul class="files" aria-label={t("chFiles")}>
+            {files.map((f) => (
+              <li key={f.id} class="file-chip" data-file={f.name}>
+                {f.kind === "image" ? <img src={f.images[0]} alt="" /> : <span class="file-ico">{f.kind === "pdf" ? "PDF" : f.kind === "docx" ? "DOC" : "TXT"}</span>}
+                <span class="file-name">{f.name}</span>
+                <button type="button" class="file-x" aria-label={`${t("chRemoveFile")} ${f.name}`} onClick={() => setFiles(files.filter((x) => x.id !== f.id))}>✕</button>
+              </li>
+            ))}
+          </ul>
+        )}
         <div class="composer-row">
+          <label class={"attach" + (reading ? " busy" : "")} aria-label={t("chAttach")} title={t("chAttach")} data-action="attach">
+            <IconClip />
+            <input type="file" name="attach" multiple accept={ACCEPT} class="sr-only" disabled={reading || busy || !!pending}
+              onChange={(e) => { const i = e.target as HTMLInputElement; void addFiles([...(i.files ?? [])]); i.value = ""; }} />
+          </label>
+          {voice.canListen() && (
+            <button type="button" class={"mic" + (listening ? " on" : "")} data-action="mic" aria-pressed={listening} aria-label={listening ? t("chMicStop") : t("chMic")}
+              disabled={busy || !!pending} onClick={() => (listening ? stopListening() : startListening())}><IconMic /></button>
+          )}
           <label class="sr-only" for="chat-input">{t("chMessage")}</label>
-          <textarea id="chat-input" ref={box} name="message" rows={1} value={input} placeholder={pending ? t("chReviewFirst") : t("chPlaceholder")}
+          <textarea id="chat-input" ref={box} name="message" rows={1} value={input} placeholder={pending ? t("chReviewFirst") : listening ? t("chListening") : t("chPlaceholder")}
             maxLength={20000} onInput={(e) => {
               const el = e.target as HTMLTextAreaElement;
               setInput(el.value);
               el.style.height = "auto";
               el.style.height = Math.min(el.scrollHeight, 320) + "px";
-            }} onKeyDown={onKey} />
+            }} onKeyDown={onKey}
+            onPaste={(e) => {
+              // a picture pasted into the box is attached
+              const pics = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+              if (pics.length) {
+                e.preventDefault();
+                void addFiles(pics);
+              }
+            }} />
           {busy && abort.current ? (
             <button type="button" class="send stop" data-action="stop" aria-label={t("chStop")} onClick={() => abort.current?.abort()}><IconStop /></button>
           ) : (
@@ -554,7 +750,18 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
       </div>}
 
       {sheet === "model" && <ModelSheet value={model} autoFree={settings.autoFree} onAutoFree={(v) => updateSettings((x) => ({ ...x, autoFree: v }))}
+        readAloud={settings.readAloud} onReadAloud={voice.canSpeak() ? (v) => (v && voice.unlockSpeech(), updateSettings((x) => ({ ...x, readAloud: v }))) : undefined}
         onClose={() => setSheet(null)} onChoose={(m) => (updateSettings((x) => ({ ...x, model: m, freeConsent: x.freeConsent || viaOf(m) === "free" })), setSheet(null))} />}
+      {sheet === "council" && (
+        <CouncilSheet value={settings.council} on={settings.councilOn} onClose={() => setSheet(null)}
+          onChange={(on, council) => updateSettings((x) => ({ ...x, councilOn: on, council, freeConsent: x.freeConsent || (on && council.members.some((m) => viaOf(m) === "free")) }))} />
+      )}
+      {runHtml !== null && (
+        <PreviewDialog html={runHtml} onClose={() => setRunHtml(null)} onFix={(errs) => {
+          setRunHtml(null);
+          usePrompt(fill(t("cdFixPrompt"), { errors: errs.slice(0, 5).map((e) => "- " + e).join("\n") }), true);
+        }} />
+      )}
       {consent && (
         <Dialog title={t("chConsentTitle")} onClose={() => (setFailure({ key: "chErr_funds", sessionId: consent.sid, askId: consent.askId }), setConsent(null))} id="free-consent">
           <p>{t("chConsentText")}</p>
@@ -609,6 +816,29 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
   );
 }
 
+/** The saved question named a photo or scanned pages (pictures are not saved). */
+const hadPictures = (text: string): boolean => /\[(poză atașată|attached photo): |pagini scanate trimise ca imagini|scanned pages sent as images/.test(text);
+/** The typed question, without the attached files' part. */
+function questionOnly(text: string): string {
+  const i = text.search(FILES_START);
+  return i < 0 ? text : text.slice(0, i);
+}
+
+/** A question with files: the question shows; the files' text is folded (it can be long). */
+const FILES_START = /\n\n(?=Fișier atașat: |Attached file: |\[poză atașată: |\[attached photo: |\[Fișier atașat: |\[Attached file: )/;
+function AskBubble(props: { text: string; label: string }): JSX.Element {
+  const i = props.text.search(FILES_START);
+  if (i < 0) return <div class="bubble">{props.text}</div>;
+  const rest = props.text.slice(i + 2);
+  const names = [...rest.matchAll(/^(?:\[)?(?:Fișier atașat|Attached file|poză atașată|attached photo): ([^\n(\]]+)/gm)].map((m) => m[1].trim());
+  return (
+    <div class="bubble">
+      {props.text.slice(0, i)}
+      <details class="ask-files"><summary>📎 {names.join(", ") || props.label}</summary><pre>{rest}</pre></details>
+    </div>
+  );
+}
+
 /** The proposals block is reviewed separately: the bubble shows the answer without it. */
 function stripBlock(text: string): string {
   return text.replace(/^[ \t]*(```|~~~)[ \t]*(aiw-propuneri|aiw-proposals)[ \t]*\n[\s\S]*?(^[ \t]*\1[ \t]*$|(?![\s\S]))/gim, "").trim();
@@ -626,7 +856,7 @@ function puterKey(e: unknown, via: Via = "puter"): Key {
 
 // ---------- sheets ----------
 
-function ModelSheet(props: { value: string; autoFree: boolean; onAutoFree: (v: boolean) => void; onChoose: (m: string) => void; onClose: () => void }): JSX.Element {
+function ModelSheet(props: { value: string; autoFree: boolean; onAutoFree: (v: boolean) => void; readAloud: boolean; onReadAloud?: (v: boolean) => void; onChoose: (m: string) => void; onClose: () => void }): JSX.Element {
   const { t } = useI18n();
   const [custom, setCustom] = useState(findModel(props.value) ? "" : props.value);
   const valid = isModelId(custom.trim());
@@ -646,6 +876,10 @@ function ModelSheet(props: { value: string; autoFree: boolean; onAutoFree: (v: b
       </ul>
       <label class="check"><input type="checkbox" name="auto-free" checked={props.autoFree} onChange={(e) => props.onAutoFree((e.target as HTMLInputElement).checked)} />
         <span>{t("chAutoFree")}</span></label>
+      {props.onReadAloud && (
+        <label class="check"><input type="checkbox" name="read-aloud" checked={props.readAloud} onChange={(e) => props.onReadAloud!((e.target as HTMLInputElement).checked)} />
+          <span>{t("chReadAloud")}</span></label>
+      )}
       <form onSubmit={(e) => { e.preventDefault(); if (valid) props.onChoose(custom.trim()); }}>
         <label class="field"><span>{t("chModelCustom")}</span>
           <input name="custom-model" value={custom} placeholder="ex. gpt-5-mini" autoCapitalize="off" autoCorrect="off" spellcheck={false}
@@ -656,6 +890,43 @@ function ModelSheet(props: { value: string; autoFree: boolean; onAutoFree: (v: b
           <button type="submit" class="button" disabled={!valid}>{t("chModelUse")}</button>
         </div>
       </form>
+    </Dialog>
+  );
+}
+
+function CouncilSheet(props: { value: Council; on: boolean; onChange: (on: boolean, c: Council) => void; onClose: () => void }): JSX.Element {
+  const { t } = useI18n();
+  const [members, setMembers] = useState<string[]>(props.value.members);
+  const [judge, setJudge] = useState(props.value.judge);
+  const valid = members.length >= COUNCIL_MIN && members.length <= COUNCIL_MAX;
+  const j = members.includes(judge) ? judge : members[0];
+  const toggle = (id: string) => setMembers((m) => (m.includes(id) ? m.filter((x) => x !== id) : m.length >= COUNCIL_MAX ? m : [...m, id]));
+  return (
+    <Dialog title={t("chCouncilTitle")} onClose={props.onClose} id="council-sheet" dismissable>
+      <p class="muted small-left">{t("chCouncilHint")}</p>
+      <ul class="model-list">
+        {MODELS.map((m) => (
+          <li key={m.id}>
+            <button type="button" role="checkbox" aria-checked={members.includes(m.id)} data-member={m.id} onClick={() => toggle(m.id)}
+              disabled={!members.includes(m.id) && members.length >= COUNCIL_MAX}>
+              <span class="m-name">{members.includes(m.id) ? "☑ " : "☐ "}{m.name}<span class="m-maker">{m.maker}</span></span>
+              <span class="tier">{t(`chTier_${m.tier}` as Key)}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {members.length > 0 && (
+        <label class="field"><span>{t("chCouncilJudge")}</span>
+          <select name="judge" value={j} onChange={(e) => setJudge((e.target as HTMLSelectElement).value)}>
+            {members.map((m) => <option key={m} value={m}>{nameOf(m)}</option>)}
+          </select>
+        </label>
+      )}
+      {!valid && <p class="form-error">{t("chCouncilPick")}</p>}
+      <div class="sheet-actions">
+        <button type="button" class="button secondary" data-action="council-off" onClick={() => (props.onChange(false, valid ? { members, judge: j } : props.value), props.onClose())}>{t("chCouncilOff")}</button>
+        <button type="button" class="button" data-action="council-on" disabled={!valid} onClick={() => (props.onChange(true, { members, judge: j }), props.onClose())}>{t("chCouncilUse")}</button>
+      </div>
     </Dialog>
   );
 }
