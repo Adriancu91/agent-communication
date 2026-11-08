@@ -41,10 +41,14 @@ test("import from a Claude export, then continue the conversation in the chat fo
   await expect(page.locator('[data-msg="reply"] .bubble')).toHaveText(["Pasul 1: pagina de start."]);
 
   // not connected to Puter: the free mode works without an account
-  await page.locator('[data-action="use-free"]').click();
-  await expect(page.locator('[data-action="model"]')).toHaveAttribute("data-model", "free:gpt-oss-20b");
+  // (AIW-08: a new user is on the automatic pilot; at the first message it asks once, then, with no
+  // account, the free model answers)
+  await expect(page.locator('[data-action="model"]')).toHaveAttribute("data-model", "auto");
   await page.locator("#chat-input").fill("Și apoi?");
   await page.locator('[data-action="send"]').click();
+  await expect(page.locator("#pilot-consent")).toContainText("Pollinations");
+  expect(sent).toHaveLength(0); // nothing goes out before the user agrees
+  await page.locator('[data-action="pilot-yes"]').click();
   await expect(page.locator('[data-msg="reply"] .bubble').last()).toHaveText("Pasul 2: pagina de contact.");
   // the imported conversation travels with the question
   const roles = sent[0].messages.map((m) => m.role);

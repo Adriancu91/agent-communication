@@ -55,6 +55,9 @@ const calls = (page: Page) => page.evaluate(() => (window as unknown as { __pute
 
 async function project(page: Page) {
   await setRo(page);
+  // AIW-08: a new user starts on the automatic pilot; these older tests keep a fixed model, as a user who
+  // chose one (the pilot has its own tests below)
+  await page.evaluate(() => localStorage.setItem("aiw.chat", JSON.stringify({ model: "gemini-2.5-flash-lite" })));
   const pid = await newProject(page, "Oferta Brăila");
   await openMemory(page, pid);
   await addEntry(page, "goal", "Câștigăm licitația", "Termen: 15 decembrie");
@@ -68,10 +71,24 @@ async function openChat(page: Page, pid: string, connect = true) {
   await page.goto(`./#/chat/${encodeURIComponent(pid)}`);
   await expect(page.locator("h1")).toHaveText("Chat AI");
   if (connect) {
-    await expect(page.locator("[data-connect]")).toBeVisible();
-    await page.locator('[data-action="connect"]').click();
+    // AIW-08: no connect card in front of the chat any more; the account is in the Options menu
+    await menu(page, "account");
+    await menuOpen(page);
     await expect(page.locator('[data-action="account"]')).toHaveAttribute("data-account", "in");
+    await page.keyboard.press("Escape");
+    await expect(page.locator("dialog[open]")).toHaveCount(0);
   }
+}
+
+/** AIW-08: the chat's options (saving, prompts, council, voice, account) are in the ⋯ menu. */
+async function menuOpen(page: Page) {
+  await expect(page.locator("dialog[open]")).toHaveCount(0);
+  await page.locator('[data-action="menu"]').click();
+  await expect(page.locator("#chat-menu")).toBeVisible();
+}
+async function menu(page: Page, action: string) {
+  await menuOpen(page);
+  await page.locator(`#chat-menu [data-action="${action}"]`).click();
 }
 
 async function send(page: Page, text: string) {
@@ -84,11 +101,13 @@ async function send(page: Page, text: string) {
 test("connect once, ask, the answer streams in and is saved with the question", async ({ page }) => {
   const pid = await project(page);
   await openChat(page, pid);
-  await expect(page.locator('[data-action="account"]')).toContainText("adrian");
-  await expect(page.locator("[data-empty-chat]")).toContainText("Oferta Brăila");
-  // the saving is shown before sending (AIW-06.1: on the Saving button, details in its sheet, not over the box)
   await page.locator("#chat-input").fill("Unde suntem?");
+  await menuOpen(page);
+  await expect(page.locator('[data-action="account"]')).toContainText("adrian");
+  // the saving is shown before sending (AIW-06.1: on the Saving button, details in its sheet, not over the box)
   await expect(page.locator('[data-action="economy"]')).toContainText(/−\d+%/);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-empty-chat]")).toContainText("Oferta Brăila");
   await expect(page.locator(".composer [data-estimate]")).toHaveCount(0);
 
   await queue(page, "Suntem la etapa de ofertă. Prețul rămâne 4,2 lei/kg.");
@@ -158,10 +177,12 @@ test("saving presets change what is sent; another model continues the same conve
   await send(page, "Prima întrebare");
   await expect(page.locator('[data-msg="reply"]')).toHaveCount(1);
 
-  await page.locator('[data-action="economy"]').click();
+  await menu(page, "economy");
   await page.locator('[data-preset-choice="max"]').click();
   await page.locator("#eco-sheet .sheet-actions .button:not(.secondary)").click();
+  await menuOpen(page);
   await expect(page.locator('[data-action="economy"]')).toHaveAttribute("data-preset", "max");
+  await page.keyboard.press("Escape");
 
   await page.locator('[data-action="model"]').click();
   await page.locator('[data-model-id="claude-haiku-5-5"]').click();
@@ -206,9 +227,10 @@ test("an error is explained and the question can be retried without being saved 
 test("templates: a ready-made one fills the box; my own are saved and reused", async ({ page }) => {
   const pid = await project(page);
   await openChat(page, pid);
+  await menu(page, "prompts");
   await page.locator('[data-prompt="risks"]').click();
   await expect(page.locator("#chat-input")).toHaveValue(/riscuri/);
-  await page.locator('[data-action="prompts"]').click();
+  await menu(page, "prompts");
   const sheet = page.locator("#prompts-sheet");
   await sheet.locator('input[name="prompt-label"]').fill("Oferta pe scurt");
   await sheet.locator('textarea[name="prompt-text"]').fill("Rezumă oferta în 3 rânduri.");
@@ -217,6 +239,7 @@ test("templates: a ready-made one fills the box; my own are saved and reused", a
   await sheet.locator(".sheet-actions .button.secondary").click();
   await page.reload();
   await page.locator("#chat-input").fill("");
+  await menu(page, "prompts");
   await page.locator('[data-prompt^="U-"]').click();
   await expect(page.locator("#chat-input")).toHaveValue("Rezumă oferta în 3 rânduri.");
 });
@@ -322,12 +345,12 @@ test("Puter credit runs out: after one consent, the same question continues on t
 test("the account sheet closes with its button and by tapping outside", async ({ page }) => {
   const pid = await project(page);
   await openChat(page, pid);
-  await page.locator('[data-action="account"]').click();
+  await menu(page, "account");
   await expect(page.locator("#chat-account")).toBeVisible();
   await expect(page.locator("#chat-account")).not.toContainText("Deschide Puter");
   await page.locator('#chat-account [data-action="close-sheet"]').click();
   await expect(page.locator("#chat-account")).toHaveCount(0);
-  await page.locator('[data-action="account"]').click();
+  await menu(page, "account");
   await expect(page.locator("#chat-account")).toBeVisible();
   await page.mouse.click(5, 5); // outside the sheet
   await expect(page.locator("#chat-account")).toHaveCount(0);
@@ -336,7 +359,7 @@ test("the account sheet closes with its button and by tapping outside", async ({
 test("a form never closes on a tap outside it (typed text is kept)", async ({ page }) => {
   const pid = await project(page);
   await openChat(page, pid);
-  await page.locator('[data-action="prompts"]').click();
+  await menu(page, "prompts");
   const sheet = page.locator("#prompts-sheet");
   await sheet.locator('input[name="prompt-label"]').fill("Text nesalvat");
   await page.mouse.click(5, 5);
@@ -422,20 +445,23 @@ test("voice: dictation fills the box; the hands-free conversation sends at the p
   // hands-free: listen → send → read the answer → listen again
   await page.evaluate(() => ((window as unknown as { __say: string[] }).__say = ["Care e prețul?", ""]));
   await queue(page, "Prețul e **4,2 lei/kg**.");
-  await page.locator('[data-action="hands-free"]').click();
+  await menu(page, "hands-free");
   await expect(page.locator('[data-msg="reply"] .bubble')).toHaveText("Prețul e 4,2 lei/kg.");
   await expect(page.locator('[data-msg="reply"] .bubble strong')).toHaveText("4,2 lei/kg"); // formatted, not raw
   // (a silent " " is spoken first, from the tap: it lets an iPhone read aloud later)
   await expect.poll(() => page.evaluate(() => (window as unknown as { __spoken: string[] }).__spoken.filter((x) => x.trim()))).toEqual(["Prețul e 4,2 lei/kg."]);
-  // the second listening heard nothing: the conversation stops by itself
-  await expect(page.locator('[data-action="hands-free"]')).toHaveAttribute("aria-pressed", "false");
+  // the second listening heard nothing: the conversation stops by itself (AIW-08: its "on" pill above the box goes away)
+  await expect(page.locator('.live-pills [data-action="hands-free"]')).toHaveCount(0);
+  await menuOpen(page);
+  await expect(page.locator('#chat-menu [data-action="hands-free"]')).toHaveAttribute("aria-pressed", "false");
+  await page.keyboard.press("Escape");
   expect((await calls(page)).map((c) => c.messages.at(-1)!.content)).toEqual(["Care e prețul?"]);
 });
 
 test("council: the same question to two models, then the judge compares; one answer saved with all three parts", async ({ page }) => {
   const pid = await project(page);
   await openChat(page, pid);
-  await page.locator('[data-action="council-sheet"]').click();
+  await menu(page, "council-sheet");
   const sheet = page.locator("#council-sheet");
   // default: three members; keep two
   await sheet.locator('[data-member="claude-haiku-5-5"]').click();
@@ -477,6 +503,7 @@ test("code agent: a page from the answer runs isolated; its errors can be sent b
     "```",
   ].join("\n");
   await queue(page, app);
+  await menu(page, "prompts");
   await page.locator('[data-prompt="app"]').click();
   await expect(page.locator("#chat-input")).toHaveValue(/singur fișier HTML/);
   await page.locator("#chat-input").fill("Fă un calculator.");

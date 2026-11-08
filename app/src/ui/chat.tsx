@@ -9,7 +9,7 @@ import { parseReply } from "../continuity";
 import {
   buildMessages, builtInPrompts, callOptions, cleanEconomy, cleanMyPrompts, DEFAULT_ECONOMY, DEFAULT_MODEL, estimateCost,
   tokensForChars, findModel, HISTORY_CHOICES, isModelId, messagesChars, MODELS, MY_PROMPT_LABEL_MAX, MY_PROMPT_TEXT_MAX, MY_PROMPTS_MAX,
-  FREE_MODEL, OUTPUT_CHOICES, PRESETS, viaOf, type Via, COUNCIL, COUNCIL_MAX, COUNCIL_MIN, cleanCouncil, councilText, judgeMessages, memberMessages, nameOf, type Council, type MemberAnswer, type ChatMessage, type WireMessage, messageWithFiles, imagesOf, withImages, seesImages, IMAGE_TOKENS, MAX_ATTACHMENTS, type Attachment, presetOf, priceHint, systemPrompt, type AnswerStyle, type ContextMode, type Economy, type MyPrompt, type PresetId,
+  FREE_MODEL, OUTPUT_CHOICES, PRESETS, viaOf, AUTO, ROUTE, FREE_GAP_MS, decideLocally, dispatchMessages, extractMessages, finalTag, type PaidLevel, needsSummary, olderTurns, pilotEconomy, readTag, summaryMessages, withExtract, withSummary, type Level, type Summary, type Via, COUNCIL, COUNCIL_MAX, COUNCIL_MIN, cleanCouncil, councilText, judgeMessages, memberMessages, nameOf, type Council, type MemberAnswer, type ChatMessage, type WireMessage, messageWithFiles, imagesOf, withImages, seesImages, IMAGE_TOKENS, MAX_ATTACHMENTS, type Attachment, presetOf, priceHint, systemPrompt, type AnswerStyle, type ContextMode, type Economy, type MyPrompt, type PresetId,
 } from "../chat";
 import { ReplyDialog, Segmented, copyText, useSessions } from "./continuity";
 import { errorKey, lastProject, rememberProject, sessionStore, useMemory, useProjects } from "./data";
@@ -30,6 +30,8 @@ export const chatUrl = (projectId?: string, sessionId?: string) =>
 const SETTINGS = "aiw.chat";
 const MY_PROMPTS = "aiw.chat.prompts";
 const PENDING = "aiw.chat.pending.";
+/** AIW-08: the pilot's summary of the older part of a chat (on this device; rebuilt when needed). */
+const SUMMARY = "aiw.chat.summary.";
 
 interface ChatSettings {
   model: string;
@@ -38,6 +40,8 @@ interface ChatSettings {
   autoFree: boolean;
   /** the user agreed (once) that messages may go to the free public service */
   freeConsent: boolean;
+  /** AIW-08: the user agreed (once) to the automatic pilot (it sends more to the free service than the free mode) */
+  pilotConsent: boolean;
   /** AIW-07: read every answer aloud */
   readAloud: boolean;
   /** AIW-07: the council of models (on = every question goes to all members, then to the judge) */
@@ -63,7 +67,8 @@ function writeJson(key: string, value: unknown): void {
 }
 function readSettings(): ChatSettings {
   const r = (readJson(SETTINGS) ?? {}) as Record<string, unknown>;
-  return { model: isModelId(r.model) ? r.model : DEFAULT_MODEL, economy: cleanEconomy(r.economy), autoFree: r.autoFree !== false, freeConsent: r.freeConsent === true, readAloud: r.readAloud === true, councilOn: r.councilOn === true, council: cleanCouncil(r.council) };
+  // AIW-08: a new user starts on the automatic pilot (an earlier user keeps the model: see ChatView)
+  return { model: isModelId(r.model) ? r.model : AUTO, economy: cleanEconomy(r.economy), autoFree: r.autoFree !== false, freeConsent: r.freeConsent === true, pilotConsent: r.pilotConsent === true, readAloud: r.readAloud === true, councilOn: r.councilOn === true, council: cleanCouncil(r.council) };
 }
 
 /** An answer with memory proposals waits here (on this device) until the user reviews it. */
@@ -72,6 +77,43 @@ const readPending = (sid: string): Pending | null => {
   const r = readJson(PENDING + sid) as Pending | null;
   return r && r.sid === sid && typeof r.askId === "string" && typeof r.text === "string" && typeof r.at === "string" ? r : null;
 };
+
+// ---------- AIW-08: the pilot's summary of a long chat ----------
+
+function readSummary(sid: string): Summary | null {
+  const r = readJson(SUMMARY + sid) as Summary | null;
+  return r && typeof r.n === "number" && r.n > 0 && typeof r.text === "string" ? r : null;
+}
+
+const summarizing = new Set<string>();
+/**
+ * After a paid answer: when the chat has outgrown the history window, the free model updates a short
+ * summary of the older part, at its next free turn. Skipped (until next time) when the turn is taken.
+ */
+async function summarize(sid: string, turns: { kind: string; text: string }[], history: number, lang: "ro" | "en"): Promise<void> {
+  const older = olderTurns(turns, history);
+  const prev = readSummary(sid);
+  if (!needsSummary(older.length, prev) || summarizing.has(sid)) return;
+  summarizing.add(sid);
+  try {
+    const free = await import("./freeai");
+    const wait = free.freeSlotIn(FREE_GAP_MS);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait + 300));
+    if (free.freeSlotIn(FREE_GAP_MS) > 0) return; // another free request took the turn: next time
+    const text = (await free.helperFree(summaryMessages(older, prev, lang), 30000)).trim();
+    if (text) writeJson(SUMMARY + sid, { n: older.length, text: text.slice(0, 1500) });
+  } catch {
+    /* no summary this time: the chat works as before */
+  } finally {
+    summarizing.delete(sid);
+  }
+}
+
+const sleep = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => (clearTimeout(t), reject(new puter.PuterError("aborted"))), { once: true });
+  });
 
 // ---------- the conversation: this chat and the chats it continues (another model, same work) ----------
 
@@ -171,16 +213,21 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   /** always from the latest settings (an answer arriving later never writes back old ones) */
-  const updateSettings = (f: (s: ChatSettings) => ChatSettings) =>
-    setSettingsState((prev) => {
-      const n = f(prev);
-      writeJson(SETTINGS, n);
-      return n;
-    });
-  const setSettings = (s: ChatSettings) => {
-    setSettingsState(s);
-    writeJson(SETTINGS, s);
+  const updateSettings = (f: (s: ChatSettings) => ChatSettings) => {
+    const n = f(settingsRef.current);
+    settingsRef.current = n; // a send right after (same tap) already sees the new settings
+    setSettingsState(n);
+    writeJson(SETTINGS, n);
   };
+  // AIW-08: the pilot is the default only for someone who never chatted here; an earlier user (who used the
+  // default model without ever saving a setting) keeps it, so their chats are not split or redirected
+  const fresh = useRef(readJson(SETTINGS) === null);
+  useEffect(() => {
+    if (!fresh.current || sessionsLoading) return;
+    fresh.current = false;
+    const earlier = sessions.some((s) => s.provider === "inapp" && !s.providerName.startsWith("import:"));
+    updateSettings((x) => ({ ...x, model: earlier && x.model === AUTO ? DEFAULT_MODEL : x.model }));
+  }, [sessionsLoading]);
   const [myPrompts, setMyPromptsState] = useState<MyPrompt[]>(() => cleanMyPrompts(readJson(MY_PROMPTS)));
   const setMyPrompts = (l: MyPrompt[]) => {
     setMyPromptsState(l);
@@ -212,7 +259,7 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
   const [pending, setPending] = useState<Pending | null>(null);
   // AIW-07: the code agent's preview (a page of code from an answer, run in isolation)
   const [runHtml, setRunHtml] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<"model" | "eco" | "prompts" | "history" | "account" | "review" | "council" | null>(null);
+  const [sheet, setSheet] = useState<"model" | "eco" | "prompts" | "history" | "account" | "review" | "council" | "menu" | null>(null);
   const abort = useRef<AbortController | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
 
@@ -223,6 +270,13 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
   useEffect(() => () => void (alive.current = false), []);
   // the free service is used only after the user agreed once (it is another company)
   const [consent, setConsent] = useState<{ question: string; sid: string; askId: string } | null>(null);
+  // AIW-08: asked once, at the first message — the pilot (it uses the free service) or a Puter sign-in
+  const [ask, setAsk] = useState<null | { kind: "pilot" | "connect"; text: string }>(null);
+  // a message held by one of those questions, sent again once the new settings are on screen
+  const [resend, setResend] = useState<string | null>(null);
+  // AIW-08: what the pilot is doing now, and which model answered each question (this visit only)
+  const [pilotNote, setPilotNote] = useState<string | null>(null);
+  const [routes, setRoutes] = useState<Record<string, { model: string; level: Level }>>({});
   const sessionSteps = (steps ?? []).filter((x) => x.sessionId === session?.id);
   const lastStep = sessionSteps[sessionSteps.length - 1];
 
@@ -257,9 +311,11 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
   const model = settings.model;
   const eco = settings.economy;
   const modelInfo = findModel(model);
+  const isAuto = !settings.councilOn && model === AUTO;
+  const signedIn = account.state === "in";
   const formatDate = (iso: string) => props.date(iso);
   const system = useMemo(
-    () => systemPrompt(project, entries, links, { lang, economy: eco, assistant: modelInfo?.name ?? model, maxChars: 24000, date: props.date(new Date().toISOString()), formatDate }),
+    () => systemPrompt(project, entries, links, { lang, economy: eco, assistant: model === AUTO ? "Auto" : modelInfo?.name ?? model, maxChars: 24000, date: props.date(new Date().toISOString()), formatDate }),
     [project, entries, links, lang, eco, model],
   );
   const thread = steps ?? [];
@@ -272,20 +328,21 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
     return tokensForChars(messagesChars(buildMessages(full.text, thread, draft, PRESETS.quality, lang))) + imagesOf(files).length * IMAGE_TOKENS;
   }, [project, entries, links, lang, thread, draft, model]);
   const saved = fullTokens > 0 ? Math.max(0, Math.round((1 - tokens / fullTokens) * 100)) : 0;
-  const via: Via = settings.councilOn ? (settings.council.members.every((m) => viaOf(m) === "free") ? "free" : "puter") : viaOf(model);
+  // the pilot answers through Puter when signed in, otherwise everything goes to the free model
+  const via: Via = settings.councilOn ? (settings.council.members.every((m) => viaOf(m) === "free") ? "free" : "puter") : isAuto ? (signedIn ? "puter" : "free") : viaOf(model);
   const out = eco.maxOutput || 800;
   const cost = settings.councilOn
     ? [...settings.council.members, settings.council.judge].reduce<number | null>((sum, m) => {
         const one = viaOf(m) === "free" ? 0 : estimateCost(m, tokens + (m === settings.council.judge ? out * settings.council.members.length : 0), out);
         return sum === null || one === null ? null : sum + one;
       }, 0)
-    : via === "free" ? 0 : estimateCost(model, tokens, out);
+    : via === "free" ? 0 : estimateCost(isAuto ? ROUTE.medium : model, tokens, out);
 
-  const signedIn = account.state === "in";
   // the free model needs no account; a Puter model needs the user signed in
   const reachable = via === "free" || signedIn;
   // everything a message needs is loaded: the account (or free mode), the memory, the chats and this chat's steps
-  const ready = reachable && !busy && !pending && !memLoading && !sessionsLoading && steps !== null;
+  // (AIW-08: the box is always there; sending without an account asks once how to continue)
+  const ready = !busy && !pending && !memLoading && !sessionsLoading && steps !== null && (account.state !== "loading" || (via === "free" && !isAuto));
   const canSend = ready && !reading && (!!input.trim() || files.length > 0);
 
   const connect = async () => {
@@ -334,6 +391,84 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
     }
   };
 
+  /**
+   * AIW-08: the automatic pilot. Without an account, the free model answers everything. Signed in: the
+   * device decides the clear cases; a short plain question goes first to the free model, which answers it
+   * or hands it on with a tag; long documents are read by the free model first; the summary of the older
+   * part of the chat goes with the question. Every helper that fails is skipped.
+   */
+  const runPilot = async (sid: string, question: string, earlier: Exchange[], images: string[], c: { eco: Economy; system: typeof system }, signal: AbortSignal, track: { via: Via }) => {
+    const free = await import("./freeai");
+    const plain = buildMessages(c.system.text, earlier, question, c.eco, lang);
+    track.via = "free";
+    if (!signedIn) {
+      setPilotNote(t("plFree"));
+      return { ...(await free.chatFree(plain, setStreaming, signal)), model: FREE_MODEL, level: "simple" as Level, via: "free" as Via };
+    }
+    let level = decideLocally(question, images.length).level;
+    if (level === null) {
+      setPilotNote(t("plAsking"));
+      const ctrl = new AbortController();
+      const stop = () => ctrl.abort();
+      signal.addEventListener("abort", stop, { once: true });
+      const seen = { tag: "pending" as PaidLevel | null | "pending" };
+      const timer = setTimeout(stop, 8000); // no first words in time: the paid model answers instead
+      try {
+        const r = await free.chatFree(dispatchMessages(plain, lang), (so) => {
+          seen.tag = readTag(so);
+          if (seen.tag === "pending") return;
+          clearTimeout(timer);
+          if (seen.tag === null) setStreaming(so);
+          else ctrl.abort(); // handed on: the rest of its text is not needed
+        }, ctrl.signal);
+        const tag = finalTag(r.text);
+        if (tag === null) return { ...r, model: FREE_MODEL, level: "simple" as Level, via: "free" as Via };
+        level = tag;
+      } catch (e) {
+        if (signal.aborted) throw e;
+        level = seen.tag !== null && seen.tag !== "pending" ? seen.tag : "medium"; // busy, slow or failed: on to Puter
+      } finally {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", stop);
+      }
+      setStreaming("");
+    }
+    const lv: PaidLevel = level ?? "medium";
+    const model = ROUTE[lv];
+    const eco2 = pilotEconomy(lv, c.eco);
+    let q = question;
+    const ex = extractMessages(question, lang);
+    // a helper: only when the free service's turn is free; never makes the question wait
+    if (ex && free.freeSlotIn(FREE_GAP_MS) === 0) {
+      setPilotNote(t("plReading"));
+      try {
+        q = withExtract(question, await free.helperFree(ex, 20000, signal), lang);
+      } catch (e) {
+        if (signal.aborted) throw e; // otherwise the files go as they are
+      }
+    }
+    const summary = readSummary(sid);
+    const older = olderTurns(earlier, eco2.history);
+    const sys = summary && older.length > 0 && summary.n <= older.length ? withSummary(c.system.text, summary, lang) : c.system.text;
+    setPilotNote(fill(t("plRoute"), { model: nameOf(model), level: t(`plLevel_${lv}` as Key) }));
+    track.via = "puter";
+    try {
+      const r = await puter.chat(withImages(buildMessages(sys, earlier, q, eco2, lang), images), callOptions(model, eco2, !!findModel(model)?.reasoning), setStreaming, signal);
+      return { ...r, model, level: lv, via: "puter" as Via };
+    } catch (e) {
+      // credit finished: the pilot goes on with the free model, in the same chat (if allowed; it sees no pictures)
+      if (e instanceof puter.PuterError && e.problem === "funds" && settingsRef.current.autoFree && !images.length) {
+        toast({ text: t("chAutoFreeOn") });
+        setPilotNote(t("plFree"));
+        setStreaming("");
+        track.via = "free";
+        await sleep(free.freeSlotIn(5000), signal); // the free service may have just answered the dispatcher
+        return { ...(await free.chatFree(plain, setStreaming, signal)), model: FREE_MODEL, level: lv, via: "free" as Via };
+      }
+      throw e;
+    }
+  };
+
   const callModel = async (sid: string, askId: string, question: string, earlier: Exchange[], c: { model: string; via: Via; reasoning: boolean; eco: Economy; system: typeof system; council?: Council }, images: string[] = []) => {
     const ctrl = new AbortController();
     abort.current = ctrl;
@@ -341,13 +476,24 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
     let spoken: string | null = null;
     setFailure(null);
     setStreaming("");
+    const track = { via: c.via }; // which service the pilot was talking to (for the error message)
     try {
       // pictures go only with this call (they are not saved; the saved question names them)
-      const base = buildMessages(c.system.text, earlier, question, c.eco, lang);
-      const r = c.model === COUNCIL
-        ? await runCouncil(base, images, question, { eco: c.eco, system: c.system, council: c.council ?? settingsRef.current.council }, ctrl.signal)
-        : await callOne(c.model, withImages(base, images), c.eco, (so) => setStreaming(so), ctrl.signal);
-      const cut = r.cut || (c.via === "puter" && c.eco.maxOutput > 0 && !!r.usage && r.usage.output >= c.eco.maxOutput * (c.reasoning ? 2 : 1));
+      let used = { via: c.via, eco: c.eco, reasoning: c.reasoning };
+      let r: { text: string; cut: boolean; usage: { input: number; output: number } | null };
+      if (c.model === AUTO) {
+        const p = await runPilot(sid, question, earlier, images, { eco: c.eco, system: c.system }, ctrl.signal, track);
+        r = p;
+        used = { via: p.via, eco: pilotEconomy(p.level, c.eco), reasoning: !!findModel(p.model)?.reasoning };
+        setRoutes((x) => ({ ...x, [askId]: { model: p.model, level: p.level } }));
+        if (p.via === "puter") void summarize(sid, [...earlier, { kind: "ask", text: question }, { kind: "reply", text: p.text }], used.eco.history, lang);
+      } else {
+        const base = buildMessages(c.system.text, earlier, question, c.eco, lang);
+        r = c.model === COUNCIL
+          ? await runCouncil(base, images, question, { eco: c.eco, system: c.system, council: c.council ?? settingsRef.current.council }, ctrl.signal)
+          : await callOne(c.model, withImages(base, images), c.eco, (so) => setStreaming(so), ctrl.signal);
+      }
+      const cut = r.cut || (used.via === "puter" && used.eco.maxOutput > 0 && !!r.usage && r.usage.output >= used.eco.maxOutput * (used.reasoning ? 2 : 1));
       const parsed = parseReply(r.text, c.system.refs, entries);
       // proposals are never dropped: with proposals off, only a real proposals block is offered for review
       const proposals = c.eco.proposals || c.eco.context === "full" ? parsed.proposals.length > 0 : parsed.found === "block" && parsed.proposals.length > 0;
@@ -359,19 +505,20 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
         await sessionStore.applyReply(sid, r.text, []);
       }
       if (r.usage || cut) setUsage((u) => ({ ...u, [askId]: { input: r.usage?.input ?? 0, output: r.usage?.output ?? 0, cut, model: c.model } }));
-      if (c.via === "puter") void refreshAccount();
+      if (used.via === "puter") void refreshAccount();
       if ((settingsRef.current.readAloud || handsFreeRef.current) && alive.current && voice.canSpeak()) spoken = r.text;
     } catch (e) {
       // Puter credit finished: the same question continues on the free model, if the user allows it
-      if (e instanceof puter.PuterError && e.problem === "funds" && c.via === "puter" && c.model !== COUNCIL && settingsRef.current.autoFree) fallback = true;
+      if (e instanceof puter.PuterError && e.problem === "funds" && c.via === "puter" && c.model !== COUNCIL && c.model !== AUTO && settingsRef.current.autoFree) fallback = true;
       else {
-        const key = e instanceof puter.PuterError ? puterKey(e, c.via) : errorKey(e);
+        const key = e instanceof puter.PuterError ? puterKey(e, c.model === AUTO ? track.via : c.via) : errorKey(e);
         setFailure({ key, sessionId: sid, askId });
         if (e instanceof puter.PuterError && e.problem === "signin") void refreshAccount();
       }
     } finally {
       abort.current = null;
       setStreaming(null);
+      setPilotNote(null);
       setBusy(false);
     }
     if (spoken !== null) {
@@ -403,15 +550,21 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
     // the files go with the question (their text is saved with it; photos only by name)
     const question = attached.length ? messageWithFiles(typed || t("chFilesOnly"), attached, lang) : typed;
     const images = imagesOf(attached);
-    const model = auto?.model ?? (settings.councilOn ? COUNCIL : settings.model);
+    const st = settingsRef.current;
+    const model = auto?.model ?? (st.councilOn ? COUNCIL : st.model);
     const modelInfo = findModel(model);
-    const members = model === COUNCIL ? settings.council.members : [model];
+    const members = model === COUNCIL ? st.council.members : [model];
     // the automatic switch to the free model (credit finished) does not need the Puter account
     if (!question || !(ready || (auto && !pending && alive.current))) return;
+    // AIW-08: asked once — the pilot uses the free service; a Puter model needs the account
+    if (model === AUTO && !st.pilotConsent) return setAsk({ kind: "pilot", text });
+    if (!auto && model !== AUTO && model !== COUNCIL && viaOf(model) === "puter" && !signedIn) return setAsk({ kind: "connect", text });
+    if (model === AUTO && account.state === "error") toast({ text: t("plPuterError") }); // the free model answers meanwhile
+    if (model === AUTO && images.length && !signedIn) return toast({ text: t("plPictures"), error: true });
     if (images.length && !members.every(seesImages)) return toast({ text: t("chNoVision"), error: true });
     if (model === COUNCIL && !signedIn && members.some((m) => viaOf(m) === "puter")) return toast({ text: t("chErr_signin"), error: true });
     setBusy(true);
-    const c = { model, via: model === COUNCIL ? ("puter" as Via) : viaOf(model), reasoning: !!modelInfo?.reasoning, eco, system, council: settings.council };
+    const c = { model, via: model === COUNCIL ? ("puter" as Via) : model === AUTO ? via : viaOf(model), reasoning: !!modelInfo?.reasoning, eco, system, council: st.council };
     try {
       // a chat belongs to one model: another model (or a closed chat) continues in a new chat;
       // after the switch to free, it continues the chat that holds the unanswered question
@@ -437,6 +590,13 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
 
   const sendRef = useRef(send);
   sendRef.current = send;
+  // after a choice in the first-message question: sent with this render's settings and system message
+  useEffect(() => {
+    if (resend === null) return;
+    const text = resend;
+    setResend(null);
+    void send(text);
+  }, [resend]);
 
   /**
    * The same question again, only if it would go out exactly as recorded (same chat model, same context
@@ -555,66 +715,29 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
 
   return (
     <section class="chat" data-chat={project.id}>
-      <div class="chat-head">
-        <h1 class="large-title">{t("chTitle")}</h1>
-        <button type="button" class="pill" data-action="history" onClick={() => setSheet("history")}>{t("chHistory")}{chats.length ? ` · ${chats.length}` : ""}</button>
-        <button type="button" class="pill acc" data-action="new-chat" onClick={newChat}>＋ {t("chNew")}</button>
-      </div>
-
-      <div class="chat-bar">
-        <label class="field"><span>{t("chProject")}</span>
-          <select name="project" value={project.id} onChange={(e) => (location.hash = chatUrl((e.target as HTMLSelectElement).value))}>
-            {props.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </label>
-        <div class="field"><span>{t("chModel")}</span>
-          {settings.councilOn ? (
-            <button type="button" class="pill acc" data-action="council" data-model={COUNCIL} onClick={() => setSheet("council")}>
-              ⚖ {fill(t("chCouncilOnLabel"), { n: String(settings.council.members.length) })} ▾
-            </button>
-          ) : (
-            <button type="button" class="pill" data-action="model" data-model={model} onClick={() => setSheet("model")}>
-              {modelInfo?.name ?? model} <span class="price">{priceHint(model)}</span> ▾
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div class="chat-pills">
-        <button type="button" class="pill eco" data-action="economy" data-preset={preset ?? "custom"} onClick={() => setSheet("eco")}>
-          ⚡ {preset ? t(`chPreset_${preset}` as Key) : t("chPresetCustom")}{saved > 0 ? ` · −${saved}%` : ""}
+      {/* AIW-08: a clean top bar — history, the model, a new chat and the menu with everything else */}
+      <div class="chat-top">
+        <button type="button" class="icon-button" data-action="history" aria-label={t("chHistory")} title={t("chHistory")} onClick={() => setSheet("history")}>
+          <span aria-hidden="true">☰</span>{chats.length > 0 && <span class="count">{chats.length}</span>}
         </button>
-        <button type="button" class="pill" data-action="account" data-account={account.state} disabled={account.state === "loading"} onClick={() => (signedIn ? setSheet("account") : void connect())}>
-          <span class={"dot" + (signedIn ? " on" : "")} />
-          {signedIn ? (account.name ?? t("chPuterOn")) : account.state === "loading" ? t("loading") : t("chPuterOff")}
-          {signedIn && account.credit ? ` · ${account.credit.unit === "usd" ? money(account.credit.value, lang) : k(Math.round(account.credit.value)) + " " + t("chCredits")}` : ""}
-        </button>
-        {voice.canListen() && (
-          <button type="button" class={"pill" + (handsFree ? " acc" : "")} data-action="hands-free" aria-pressed={handsFree} disabled={!reachable} onClick={toggleHandsFree}>
-            🎙 {handsFree ? t("chHandsFreeOn") : t("chHandsFree")}
+        <h1 class="sr-only">{t("chTitle")}</h1>
+        {settings.councilOn ? (
+          <button type="button" class="model-chip acc" data-action="council" data-model={COUNCIL} onClick={() => setSheet("council")}>
+            ⚖ {fill(t("chCouncilOnLabel"), { n: String(settings.council.members.length) })} ▾
+          </button>
+        ) : (
+          <button type="button" class="model-chip" data-action="model" data-model={model} onClick={() => setSheet("model")}>
+            <span class="name">{model === AUTO ? `✦ ${t("plAuto")}` : modelInfo?.name ?? model}</span>
+            {model !== AUTO && <span class="price">{priceHint(model)}</span>} ▾
           </button>
         )}
-        {speaking === "auto" && (
-          <button type="button" class="pill acc" data-action="stop-reading" onClick={() => (voice.stopSpeaking(), setSpeaking(null))}>■ {t("chStopReading")}</button>
-        )}
-        <button type="button" class={"pill" + (settings.councilOn ? " acc" : "")} data-action="council-sheet" onClick={() => setSheet("council")}>⚖ {t("chCouncil")}</button>
-        <button type="button" class="pill" data-action="prompts" onClick={() => setSheet("prompts")}>✎ {t("chPrompts")}</button>
+        <span class="grow" />
+        <button type="button" class="icon-button" data-action="new-chat" aria-label={t("chNew")} title={t("chNew")} onClick={newChat}><span aria-hidden="true">＋</span></button>
+        <button type="button" class="icon-button" data-action="menu" aria-label={t("chMenu")} title={t("chMenu")} onClick={() => setSheet("menu")}><span aria-hidden="true">⋯</span></button>
       </div>
+      <p class="chat-project muted">{project.name}</p>
 
-      {account.state === "out" && via === "puter" && (
-        <div class="card connect-card" data-connect>
-          <h2>{t("chConnectTitle")}</h2>
-          <p>{t("chConnectText")}</p>
-          <div class="connect-actions">
-            <button type="button" class="button" data-action="connect" onClick={() => void connect()}>{t("chConnect")}</button>
-            <button type="button" class="button ghost" data-action="use-free" onClick={() => updateSettings((x) => ({ ...x, model: FREE_MODEL, freeConsent: true }))}>{t("chUseFree")}</button>
-          </div>
-        </div>
-      )}
-      {via === "free" && thread.length === 0 && (
-        <p class="card notice small-left" data-free-note>{t("chFreeNote")}</p>
-      )}
-      {account.state === "error" && via === "puter" && (
+      {account.state === "error" && (via === "puter" || isAuto) && (
         <div class="card error-card" role="alert" data-puter-error>
           <p>{t("chLoadError")}</p>
           <button type="button" class="button secondary small-button" onClick={() => void refreshAccount()}>{t("chRetry")}</button>
@@ -626,6 +749,7 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
           <div class="orb"><IconSpark /></div>
           <p class="lead">{fill(t("chEmpty"), { project: project.name })}</p>
           <p class="muted">{fill(t("chEmptyHint"), { n: String(entries.filter((e) => e.confirmation === "confirmed" && !e.archived).length) })}</p>
+          {via === "free" && !isAuto && <p class="muted small" data-free-note>{t("chFreeNote")}</p>}
           <div class="starter">
             {prompts.slice(0, 4).map((p) => (
               <button key={p.id} type="button" data-starter={p.id} disabled={!ready} onClick={() => void send(p.text)}>
@@ -662,6 +786,7 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
                 <div class="bubble"><Markdown text={stripBlock(x.text)} renderCode={(b) => <CodeTools block={b} onRun={setRunHtml} />} /></div>
                 <div class="msg-meta">
                   <span>{(() => { const o = sessions.find((s) => s.id === x.sessionId); return o ? assistantName(o) : ""; })()}</span>
+                  {before && routes[before.id] && <span data-pilot-route={routes[before.id].level}>→ {nameOf(routes[before.id].model)}</span>}
                   {u && u.input > 0 && <span data-usage>↑{k(u.input)} ↓{k(u.output)} {t("chTokens")}</span>}
                   {x.proposals.length > 0 && <span>{fill(t("chProposalsSaved"), { n: String(x.proposals.length) })}</span>}
                   <button type="button" class="pill small" onClick={async () => toast({ text: t((await copyText(stripBlock(x.text))) ? "chCopied" : "chCopyFailed") })}>{t("chCopy")}</button>
@@ -692,18 +817,20 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
         )}
         {streaming !== null && (
           <li class="msg ai" data-msg="streaming">
+            {pilotNote && <div class="msg-meta pilot-note" data-pilot-note>✦ {pilotNote}</div>}
             {streaming ? <div class="bubble typing"><Markdown text={stripBlock(streaming)} /></div> : <div class="bubble thinking" aria-label={t("chThinking")}><i /><i /><i /></div>}
           </li>
         )}
       </ol>
 
-      {/* the message box appears once connected: before, the connect card is the only next step */}
-      {reachable && <div class="composer">
-        <div class="chips" role="toolbar" aria-label={t("chPrompts")}>
-          {[...prompts.map((p) => ({ id: p.id, icon: p.icon, label: p.label, text: p.text, open: p.open })), ...myPrompts.map((p) => ({ id: p.id, icon: "★", label: p.label, text: p.text, open: false }))].map((p) => (
-            <button key={p.id} type="button" class="chip" data-prompt={p.id} onClick={() => usePrompt(p.text, p.open)}><b>{p.icon}</b>{p.label}</button>
-          ))}
-        </div>
+      {/* AIW-08: the message box is always there; what is running now (voice) shows just above it */}
+      <div class="composer">
+        {(handsFree || speaking === "auto") && (
+          <div class="live-pills">
+            {handsFree && <button type="button" class="pill acc" data-action="hands-free" aria-pressed={true} onClick={toggleHandsFree}>🎙 {t("chHandsFreeOn")}</button>}
+            {speaking === "auto" && <button type="button" class="pill acc" data-action="stop-reading" onClick={() => (voice.stopSpeaking(), setSpeaking(null))}>■ {t("chStopReading")}</button>}
+          </div>
+        )}
         {files.length > 0 && (
           <ul class="files" aria-label={t("chFiles")}>
             {files.map((f) => (
@@ -747,7 +874,7 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
             <button type="button" class="send" data-action="send" aria-label={t("chSend")} disabled={!canSend} onClick={() => void send()}><IconSend /></button>
           )}
         </div>
-      </div>}
+      </div>
 
       {sheet === "model" && <ModelSheet value={model} autoFree={settings.autoFree} onAutoFree={(v) => updateSettings((x) => ({ ...x, autoFree: v }))}
         readAloud={settings.readAloud} onReadAloud={voice.canSpeak() ? (v) => (v && voice.unlockSpeech(), updateSettings((x) => ({ ...x, readAloud: v }))) : undefined}
@@ -772,7 +899,7 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
         </Dialog>
       )}
       {sheet === "eco" && (
-        <EconomySheet value={eco} onClose={() => setSheet(null)} onChange={(e) => setSettings({ ...settings, economy: e })}
+        <EconomySheet value={eco} onClose={() => setSheet(null)} onChange={(e) => updateSettings((x) => ({ ...x, economy: e }))}
           estimate={
             <div class="estimate card" data-estimate={tokens}>
               <span>{t("chNextMessage")}: ≈ {k(tokens)} {t("chTokensIn")}</span>
@@ -782,7 +909,8 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
             </div>
           } />
       )}
-      {sheet === "prompts" && <PromptsSheet list={myPrompts} draft={input} onChange={setMyPrompts} onUse={(p) => (usePrompt(p.text), setSheet(null))} onClose={() => setSheet(null)} />}
+      {sheet === "prompts" && <PromptsSheet ready={[...prompts.map((p) => ({ id: p.id, icon: p.icon, label: p.label, text: p.text, open: !!p.open })), ...myPrompts.map((p) => ({ id: p.id, icon: "★", label: p.label, text: p.text, open: false }))]}
+        onPick={(p) => (usePrompt(p.text, p.open), setSheet(null))} list={myPrompts} draft={input} onChange={setMyPrompts} onUse={(p) => (usePrompt(p.text), setSheet(null))} onClose={() => setSheet(null)} />}
       {sheet === "history" && (
         <Dialog title={t("chHistory")} onClose={() => setSheet(null)} id="chat-history" dismissable>
           {chats.length === 0 ? <p class="muted">{t("chHistoryEmpty")}</p> : (
@@ -795,6 +923,65 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
             </div>
           )}
           <div class="sheet-actions single"><button type="button" class="button secondary" onClick={() => setSheet(null)}>{t("close")}</button></div>
+        </Dialog>
+      )}
+      {sheet === "menu" && (
+        <Dialog title={t("chMenu")} onClose={() => setSheet(null)} id="chat-menu" dismissable>
+          <label class="field"><span>{t("chProject")}</span>
+            <select name="project" value={project.id} onChange={(e) => { setSheet(null); location.hash = chatUrl((e.target as HTMLSelectElement).value); }}>
+              {props.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
+          <div class="menu">
+            <button type="button" class="menu-item" data-action="economy" data-preset={preset ?? "custom"} onClick={() => setSheet("eco")}>
+              ⚡ {t("chEconomy")}: {preset ? t(`chPreset_${preset}` as Key) : t("chPresetCustom")}{saved > 0 ? ` · −${saved}%` : ""}
+            </button>
+            <button type="button" class="menu-item" data-action="prompts" onClick={() => setSheet("prompts")}>✎ {t("chPrompts")}</button>
+            <button type="button" class={"menu-item" + (settings.councilOn ? " acc" : "")} data-action="council-sheet" onClick={() => setSheet("council")}>⚖ {t("chCouncil")}{settings.councilOn ? " ✓" : ""}</button>
+            {voice.canListen() && (
+              <button type="button" class="menu-item" data-action="hands-free" aria-pressed={handsFree} disabled={!reachable} onClick={() => { setSheet(null); toggleHandsFree(); }}>
+                🎙 {handsFree ? t("chHandsFreeOn") : t("chHandsFree")}
+              </button>
+            )}
+            <button type="button" class="menu-item" data-action="account" data-account={account.state} disabled={account.state === "loading"} onClick={() => (signedIn ? setSheet("account") : (setSheet(null), void connect()))}>
+              <span class={"dot" + (signedIn ? " on" : "")} />
+              {signedIn ? (account.name ?? t("chPuterOn")) : account.state === "loading" ? t("loading") : t("chPuterOff")}
+              {signedIn && account.credit ? ` · ${account.credit.unit === "usd" ? money(account.credit.value, lang) : k(Math.round(account.credit.value)) + " " + t("chCredits")}` : ""}
+            </button>
+          </div>
+          <div class="sheet-actions single"><button type="button" class="button secondary" data-action="close-sheet" onClick={() => setSheet(null)}>{t("close")}</button></div>
+        </Dialog>
+      )}
+      {ask?.kind === "pilot" && (
+        <Dialog title={t("plConsentTitle")} onClose={() => setAsk(null)} id="pilot-consent">
+          <p>{t("plConsentText")}</p>
+          <div class="sheet-actions">
+            <button type="button" class="button secondary" data-action="pilot-no" onClick={() => {
+              updateSettings((x) => ({ ...x, model: DEFAULT_MODEL }));
+              setAsk(null);
+              setResend(ask.text);
+            }}>{t("plConsentNo")}</button>
+            <button type="button" class="button" data-action="pilot-yes" onClick={() => {
+              updateSettings((x) => ({ ...x, pilotConsent: true, freeConsent: true }));
+              setAsk(null);
+              setResend(ask.text);
+            }}>{t("plConsentYes")}</button>
+          </div>
+        </Dialog>
+      )}
+      {ask?.kind === "connect" && (
+        <Dialog title={t("chConnectTitle")} onClose={() => setAsk(null)} id="chat-connect">
+          <div data-connect>
+            <p>{t("chConnectText")}</p>
+            <div class="sheet-actions">
+              <button type="button" class="button secondary" data-action="use-free" onClick={() => {
+                updateSettings((x) => ({ ...x, model: FREE_MODEL, freeConsent: true }));
+                setAsk(null);
+                setResend(ask.text);
+              }}>{t("chUseFree")}</button>
+              <button type="button" class="button" data-action="connect" onClick={() => { setAsk(null); void connect(); }}>{t("chConnect")}</button>
+            </div>
+          </div>
         </Dialog>
       )}
       {sheet === "account" && (
@@ -858,12 +1045,19 @@ function puterKey(e: unknown, via: Via = "puter"): Key {
 
 function ModelSheet(props: { value: string; autoFree: boolean; onAutoFree: (v: boolean) => void; readAloud: boolean; onReadAloud?: (v: boolean) => void; onChoose: (m: string) => void; onClose: () => void }): JSX.Element {
   const { t } = useI18n();
-  const [custom, setCustom] = useState(findModel(props.value) ? "" : props.value);
+  const [custom, setCustom] = useState(findModel(props.value) || props.value === AUTO ? "" : props.value);
   const valid = isModelId(custom.trim());
   return (
     <Dialog title={t("chModelTitle")} onClose={props.onClose} id="model-sheet" dismissable>
       <p class="muted small-left">{t("chModelHint")}</p>
       <ul class="model-list" role="radiogroup" aria-label={t("chModel")}>
+        {/* AIW-08: the automatic pilot chooses the model for each question */}
+        <li>
+          <button type="button" role="radio" aria-checked={props.value === AUTO} data-model-id={AUTO} onClick={() => props.onChoose(AUTO)}>
+            <span class="m-name">✦ {t("plAuto")}<span class="m-maker">{t("plAutoHint")}</span></span>
+            <span class="tier">{t("plAutoTier")}</span>
+          </button>
+        </li>
         {MODELS.map((m) => (
           <li key={m.id}>
             <button type="button" role="radio" aria-checked={props.value === m.id} data-model-id={m.id} onClick={() => props.onChoose(m.id)}>
@@ -975,7 +1169,7 @@ function EconomySheet(props: { value: Economy; onChange: (e: Economy) => void; o
   );
 }
 
-function PromptsSheet(props: { list: MyPrompt[]; draft: string; onChange: (l: MyPrompt[]) => void; onUse: (p: MyPrompt) => void; onClose: () => void }): JSX.Element {
+function PromptsSheet(props: { ready: { id: string; icon: string; label: string; text: string; open: boolean }[]; onPick: (p: { text: string; open: boolean }) => void; list: MyPrompt[]; draft: string; onChange: (l: MyPrompt[]) => void; onUse: (p: MyPrompt) => void; onClose: () => void }): JSX.Element {
   const { t } = useI18n();
   const [label, setLabel] = useState("");
   const [text, setText] = useState(props.draft.trim().slice(0, MY_PROMPT_TEXT_MAX));
@@ -990,6 +1184,12 @@ function PromptsSheet(props: { list: MyPrompt[]; draft: string; onChange: (l: My
   };
   return (
     <Dialog title={t("chPromptsTitle")} onClose={props.onClose} id="prompts-sheet">
+      {/* AIW-08: the ready-made prompts and the user's own, moved here from above the message box */}
+      <div class="chips wrap" role="toolbar" aria-label={t("chPrompts")}>
+        {props.ready.map((p) => (
+          <button key={p.id} type="button" class="chip" data-prompt={p.id} onClick={() => props.onPick(p)}><b>{p.icon}</b>{p.label}</button>
+        ))}
+      </div>
       {props.list.length > 0 ? (
         <ul class="list">
           {props.list.map((p) => (

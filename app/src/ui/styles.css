@@ -411,14 +411,25 @@ body {
 
 /* ---------- AIW-06: chat ---------- */
 .chat { display: flex; flex-direction: column; gap: 12px; }
-.chat-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.chat-head .large-title { margin: 8px auto 4px 0; }
-.chat-bar {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
-}
-.chat-bar .field { margin: 0; }
-.chat-bar .field span { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-.chat-pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+/* AIW-08: the clean top bar (history · model · new chat · options) */
+.chat-top { position: relative; display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+.chat-top .icon-button { margin: 0; font-size: 22px; color: var(--text); position: relative; }
+.chat-top .icon-button .count { position: absolute; top: 4px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--grad); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; }
+.chat-top .grow { flex: 1; }
+.model-chip { display: inline-flex; align-items: center; gap: 6px; min-width: 0; min-height: var(--tap); max-width: 60vw; padding: 0 12px; border: 0; border-radius: 12px; background: transparent; color: var(--text); font: inherit; font-size: 17px; font-weight: 700; white-space: nowrap; cursor: pointer; }
+.model-chip .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.model-chip .price { flex: none; }
+.model-chip:hover { background: var(--surface-2); }
+.model-chip.acc { color: var(--accent); }
+.model-chip .price { font-size: 12px; color: var(--muted); font-weight: 600; }
+.chat-project { margin: -10px 0 0 52px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.menu-item.acc { color: var(--accent); font-weight: 700; }
+.menu-item .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 8px; flex: none; }
+.menu-item .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(19, 138, 82, 0.18); }
+.menu-item:disabled { color: var(--muted); }
+.pilot-note { margin-bottom: 4px; color: var(--accent); }
+.chips.wrap { flex-wrap: wrap; overflow: visible; }
 .pill {
   display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; border-radius: 16px;
   font-size: 13px; font-weight: 600; border: 1px solid var(--line); background: var(--surface); color: var(--text);
@@ -429,16 +440,6 @@ button.pill { cursor: pointer; font: inherit; font-size: 13px; font-weight: 600;
 .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .pill .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(19, 138, 82, 0.18); }
 
-.connect-card {
-  position: relative; overflow: hidden; border: 0; color: #fff; background: var(--grad); box-shadow: var(--shadow-strong);
-}
-.connect-card h2 { font-size: 20px; }
-.connect-card p { color: rgba(255, 255, 255, 0.9); }
-.connect-card .button { background: #fff; color: #4f2fd0; box-shadow: none; margin-top: 8px; }
-.connect-card::after {
-  content: ""; position: absolute; right: -60px; top: -60px; width: 200px; height: 200px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.28), transparent 70%);
-}
 
 .thread { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .msg { display: flex; flex-direction: column; max-width: 88%; }
@@ -474,7 +475,6 @@ button.pill { cursor: pointer; font: inherit; font-size: 13px; font-weight: 600;
   background: var(--surface); border: 1px solid var(--line); border-radius: 22px; padding: 8px; box-shadow: var(--shadow-strong);
 }
 @media (min-width: 900px) { .composer { bottom: 16px; } }
-.composer .chips { padding-bottom: 6px; margin-bottom: 2px; }
 .composer .chip { min-height: var(--tap); font-size: 14px; background: var(--surface-2); }
 .composer .chip b { color: var(--accent); margin-right: 4px; font-weight: 700; }
 .composer-row { display: flex; gap: 8px; align-items: flex-end; }
@@ -524,9 +524,6 @@ button.pill { cursor: pointer; font: inherit; font-size: 13px; font-weight: 600;
   font: inherit; font-size: 14px; cursor: pointer; box-shadow: var(--shadow); min-height: 64px;
 }
 .starter button b { display: block; color: var(--accent); font-size: 15px; margin-bottom: 2px; }
-.chat-pills { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -2px; padding: 2px; }
-.chat-pills::-webkit-scrollbar { display: none; }
-.chat-pills .pill { flex: none; white-space: nowrap; }
 .msg-meta { align-items: center; }
 .pill.small { min-height: var(--tap); padding: 0 12px; font-size: 12px; }
 .thread { padding-bottom: 8px; }
@@ -535,9 +532,6 @@ button.pill { cursor: pointer; font: inherit; font-size: 13px; font-weight: 600;
 .large-title { font-size: clamp(28px, 8.4vw, 34px); overflow-wrap: anywhere; }
 .title-row { flex-wrap: wrap; }
 .title-row .large-title { flex: 1 1 auto; }
-.connect-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; position: relative; z-index: 1; }
-.connect-card .connect-actions .button { margin-top: 0; }
-.connect-card .button.ghost { background: transparent; color: #fff; border: 1.5px solid rgba(255, 255, 255, 0.75); box-shadow: none; }
 .estimate.card { margin: 0 0 12px; padding: 10px 12px; font-size: 13px; }
 .composer { padding-bottom: 10px; }
 /* AIW-06.1: import */
