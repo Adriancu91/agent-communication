@@ -1,6 +1,6 @@
 // Generated at build time. Same-origin only; never caches or contacts anything else.
-const CACHE = "aiw-637419047b1d";
-const ASSETS = ["./","./assets/freeai-DL0GibJM.js","./assets/index-C_Uk17GD.js","./assets/index-d5D-yVSR.css","./licenses.txt","./manifest.webmanifest","./icons/icon.svg","./icons/icon-192.png","./icons/icon-512.png","./icons/apple-touch-icon.png","./sandbox.html"];
+const CACHE = "aiw-8d7f9e93670d";
+const ASSETS = ["./","./assets/freeai-DKjFdcDn.js","./assets/imagefetch-yVLPR9nX.js","./assets/index-D6CbaxwZ.js","./assets/index-DEgsYJeA.css","./licenses.txt","./manifest.webmanifest","./icons/icon.svg","./icons/icon-192.png","./icons/icon-512.png","./icons/apple-touch-icon.png","./sandbox.html"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
 });
