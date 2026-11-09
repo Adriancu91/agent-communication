@@ -86,6 +86,23 @@ export class SessionStore {
       .map((exchange) => ({ exchange, assistant: sById.has(exchange.sessionId) ? assistantName(sById.get(exchange.sessionId)!) : "AI" }));
   }
 
+  /**
+   * AIW-09: for the conversation list — every chat's first question and the text of all its questions
+   * (for titles and search), in one read of the project's steps.
+   */
+  async questionIndex(projectId: string): Promise<Map<string, { first: string; all: string }>> {
+    const all = await this.base.read(["exchanges"], (tx) => byIndex<Exchange>(tx, "exchanges", "projectId", projectId));
+    const asks = all.filter((x) => x.kind === "ask").sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+    const out = new Map<string, { first: string; all: string }>();
+    for (const x of asks) {
+      const cur = out.get(x.sessionId);
+      const typed = x.text.split(/\n\n(?=Fișier atașat: |Attached file: |\[poză atașată: |\[attached photo: )/)[0];
+      if (!cur) out.set(x.sessionId, { first: x.text, all: typed });
+      else if (cur.all.length < 4000) cur.all += "\n" + typed;
+    }
+    return out;
+  }
+
   // ---------- writing ----------
 
   /**

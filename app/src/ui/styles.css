@@ -279,7 +279,7 @@ p:last-child { margin-bottom: 0; }
   bottom: 0;
   z-index: 10;
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(var(--tabs, 4), 1fr); /* AIW-09: four tabs */
   padding: 6px calc(var(--safe-right) + 4px) calc(var(--safe-bottom) + 6px) calc(var(--safe-left) + 4px);
   background: var(--bar);
   border-top: 1px solid var(--line);
@@ -584,3 +584,47 @@ h2.md-h { font-size: 18px; }
 .code-tools { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .preview-frame { width: 100%; height: min(62vh, 560px); border: 1px solid var(--line); border-radius: 14px; background: #fff; }
 #code-preview { max-width: 900px; }
+
+/* AIW-09: the chat as the home screen — the welcome, message actions, the conversation list, pictures */
+.welcome { padding: 4px 4px 8px; }
+.welcome .orb { width: 52px; height: 52px; border-radius: 18px; margin-bottom: 8px; }
+.welcome .orb svg { width: 26px; height: 26px; }
+.welcome > .muted { font-size: 15px; }
+.welcome-title { margin: 0 0 4px; font-size: clamp(24px, 6.8vw, 30px); font-weight: 800; letter-spacing: -0.01em; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.why-chips { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.why-chips li { padding: 5px 11px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; }
+.welcome .starter { grid-template-columns: repeat(2, 1fr); margin-top: 14px; gap: 8px; }
+@media (min-width: 520px) { .welcome .starter { grid-template-columns: repeat(3, 1fr); } }
+.welcome .starter button { min-height: 48px; padding: 8px 12px; display: flex; align-items: center; }
+.welcome .starter button b { margin: 0; font-size: 14px; color: var(--text); }
+.import-chip { display: inline-flex; align-items: center; min-height: var(--tap); margin-top: 10px; padding: 0 14px; border-radius: 999px; border: 1px dashed var(--accent); color: var(--accent); text-decoration: none; font-size: 14px; font-weight: 600; }
+.install-hint { display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.install-hint .icon-button { margin: 0; color: var(--muted); }
+.msg.me .msg-meta { justify-content: flex-end; }
+.msg-meta .pill.small { padding: 0 10px; }
+.chat-row { flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; padding-top: 8px; padding-bottom: 8px; min-height: 56px; color: var(--text); }
+.chat-row[aria-current="true"] { background: var(--accent-soft); }
+.chat-row-title { font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-row-sub { font-size: 12px; color: var(--muted); }
+#chat-history .search { width: 100%; margin: 0 0 10px; }
+.msg.ai.picture .bubble { padding: 4px; }
+.msg.ai.picture .bubble .md, .md-image { margin: 0; }
+.gen-image { display: block; width: min(100%, 360px); padding: 0; border: 0; background: transparent; cursor: zoom-in; border-radius: 14px; overflow: hidden; min-height: var(--tap); }
+.gen-image img { display: block; width: 100%; height: auto; aspect-ratio: 1 / 1; object-fit: cover; }
+.gen-image-wait { display: block; width: 240px; max-width: 100%; aspect-ratio: 1 / 1; background: var(--grad-soft); }
+.lightbox-img { display: block; width: 100%; height: auto; border-radius: 14px; margin-bottom: 8px; }
+.why-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.why-list li { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; line-height: 1.4; }
+.why-list li b { flex: none; width: 28px; text-align: center; font-size: 18px; }
+.why-list strong { display: block; }
+.card.why { background: var(--grad-soft); }
+.card[data-tools] .menu { margin: 0 -16px -12px; }
+.card[data-tools] .menu-item { padding-left: 16px; }
+/* AIW-09: on a short screen (iPhone SE) the welcome keeps the suggestions above the message box */
+@media (max-height: 720px) { .welcome .orb, .welcome .why-chips { display: none; } .welcome-title { margin-top: 4px; } }
+.credit-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; padding: 8px 10px; border-radius: 14px; background: var(--grad-soft); border: 1px solid var(--line); font-size: 13px; }
+.credit-bar .credit-text { flex: 1 1 100%; }
+.credit-bar .icon-button { margin: 0 0 0 auto; }
+.gen-image.missing { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px 14px; border: 1px dashed var(--accent); background: var(--accent-soft); color: var(--text); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
+.gen-image.missing b { color: var(--accent); }
+.link-like { background: none; border: 0; padding: 0 4px; min-height: var(--tap); color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }

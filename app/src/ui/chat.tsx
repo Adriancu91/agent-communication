@@ -2,6 +2,9 @@
 // The user signs in once to their own Puter account; messages then go to the chosen model and the answer
 // comes back here, streamed. Every question and answer is saved in the project's history (journal).
 // The official memory still changes ONLY when the user accepts a proposal (the same review as before).
+// AIW-09 (Adrian): the chat is the home screen — a first project is made for the user, the empty chat
+// welcomes with what the app offers, answers can be regenerated / edited / shared / exported, the
+// history has titles and search, and a description becomes a picture (free, no account).
 import type { JSX } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { assistantName, sha256, type Exchange, type Project, type Session } from "../core";
@@ -9,10 +12,12 @@ import { parseReply } from "../continuity";
 import {
   buildMessages, builtInPrompts, callOptions, cleanEconomy, cleanMyPrompts, DEFAULT_ECONOMY, DEFAULT_MODEL, estimateCost,
   tokensForChars, findModel, HISTORY_CHOICES, isModelId, messagesChars, MODELS, MY_PROMPT_LABEL_MAX, MY_PROMPT_TEXT_MAX, MY_PROMPTS_MAX,
-  FREE_MODEL, OUTPUT_CHOICES, PRESETS, viaOf, AUTO, ROUTE, FREE_GAP_MS, decideLocally, dispatchMessages, extractMessages, finalTag, type PaidLevel, needsSummary, olderTurns, pilotEconomy, readTag, summaryMessages, withExtract, withSummary, type Level, type Summary, type Via, COUNCIL, COUNCIL_MAX, COUNCIL_MIN, cleanCouncil, councilText, judgeMessages, memberMessages, nameOf, type Council, type MemberAnswer, type ChatMessage, type WireMessage, messageWithFiles, imagesOf, withImages, seesImages, IMAGE_TOKENS, MAX_ATTACHMENTS, type Attachment, presetOf, priceHint, systemPrompt, type AnswerStyle, type ContextMode, type Economy, type MyPrompt, type PresetId,
+  FREE_MODEL, OUTPUT_CHOICES, PRESETS, viaOf, AUTO, ROUTE, FREE_GAP_MS, starterPrompts, imageRequest, imageUrl, imageSeed, imageReply, imageOfReply, isImageUrl, ImageError, IMAGE_GAP_S, chatTitle, searchChats, conversationMarkdown, exportFileName, decideLocally, dispatchMessages, extractMessages, finalTag, type PaidLevel, needsSummary, olderTurns, pilotEconomy, readTag, summaryMessages, withExtract, withSummary, type Level, type Summary, type Via, COUNCIL, COUNCIL_MAX, COUNCIL_MIN, cleanCouncil, councilText, judgeMessages, memberMessages, nameOf, type Council, type MemberAnswer, type ChatMessage, type WireMessage, messageWithFiles, imagesOf, withImages, seesImages, IMAGE_TOKENS, MAX_ATTACHMENTS, type Attachment, presetOf, priceHint, systemPrompt, type AnswerStyle, type ContextMode, type Economy, type MyPrompt, type PresetId,
 } from "../chat";
 import { ReplyDialog, Segmented, copyText, useSessions } from "./continuity";
-import { errorKey, lastProject, rememberProject, sessionStore, useMemory, useProjects } from "./data";
+import { askPersistOnce, errorKey, isIOS, lastProject, rememberProject, sessionStore, store, useMemory, useProjects } from "./data";
+import { isStandalone } from "./offline";
+import { useMedia } from "./media";
 import { fill, useDate, useI18n, type Key } from "./i18n";
 import { IconClip, IconMic, IconSend, IconSpark, IconStop } from "./icons";
 import { ACCEPT, FileError, readAttachment } from "./files";
@@ -32,6 +37,14 @@ const MY_PROMPTS = "aiw.chat.prompts";
 const PENDING = "aiw.chat.pending.";
 /** AIW-08: the pilot's summary of the older part of a chat (on this device; rebuilt when needed). */
 const SUMMARY = "aiw.chat.summary.";
+/** AIW-09: the "add to the home screen" hint on the welcome screen was dismissed */
+const INSTALL_HINT = "aiw.installHint";
+/** AIW-09: when the last free picture was asked for (the service allows one every 45 s); kept across reloads */
+const IMAGE_LAST = "aiw.image.last";
+const lastImageAt = (): number => Number(readJson(IMAGE_LAST)) || 0;
+const setLastImageAt = (at: number) => writeJson(IMAGE_LAST, at || null);
+/** Seconds until the free service takes another picture (never more than the gap itself: a clock set back cannot lock it). */
+const imageWaitLeft = (): number => Math.min(IMAGE_GAP_S, Math.max(0, Math.ceil((lastImageAt() + IMAGE_GAP_S * 1000 - Date.now()) / 1000)));
 
 interface ChatSettings {
   model: string;
@@ -42,6 +55,8 @@ interface ChatSettings {
   freeConsent: boolean;
   /** AIW-08: the user agreed (once) to the automatic pilot (it sends more to the free service than the free mode) */
   pilotConsent: boolean;
+  /** AIW-09: the user agreed (once) that a description may go to the free picture service */
+  imageConsent: boolean;
   /** AIW-07: read every answer aloud */
   readAloud: boolean;
   /** AIW-07: the council of models (on = every question goes to all members, then to the judge) */
@@ -68,7 +83,7 @@ function writeJson(key: string, value: unknown): void {
 function readSettings(): ChatSettings {
   const r = (readJson(SETTINGS) ?? {}) as Record<string, unknown>;
   // AIW-08: a new user starts on the automatic pilot (an earlier user keeps the model: see ChatView)
-  return { model: isModelId(r.model) ? r.model : AUTO, economy: cleanEconomy(r.economy), autoFree: r.autoFree !== false, freeConsent: r.freeConsent === true, pilotConsent: r.pilotConsent === true, readAloud: r.readAloud === true, councilOn: r.councilOn === true, council: cleanCouncil(r.council) };
+  return { model: isModelId(r.model) ? r.model : AUTO, economy: cleanEconomy(r.economy), autoFree: r.autoFree !== false, freeConsent: r.freeConsent === true, pilotConsent: r.pilotConsent === true, imageConsent: r.imageConsent === true, readAloud: r.readAloud === true, councilOn: r.councilOn === true, council: cleanCouncil(r.council) };
 }
 
 /** An answer with memory proposals waits here (on this device) until the user reviews it. */
@@ -150,9 +165,32 @@ function useThread(session: Session | undefined, sessions: Session[]): Exchange[
 
 type Account = { state: "loading" | "out" | "in" | "error"; name: string | null; credit: { value: number; unit: "credits" | "usd" } | null };
 
-function useAccount(): [Account, () => Promise<void>] {
-  const [a, setA] = useState<Account>({ state: "loading", name: null, credit: null });
-  const refresh = async () => {
+/** AIW-09: the person signed in to Puter here at least once (Puter's own token, or our note of it). */
+const PUTER_USED = "aiw.puter.used";
+function markPuterUsed(): void {
+  try {
+    localStorage.setItem(PUTER_USED, "1");
+  } catch {
+    /* private mode */
+  }
+}
+function puterUsed(): boolean {
+  try {
+    return localStorage.getItem(PUTER_USED) === "1" || !!localStorage.getItem("puter.auth.token.v2") || !!localStorage.getItem("puter.auth.token");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The Puter account. AIW-09: Puter.js (half a megabyte) is loaded at start only for someone who has signed
+ * in before; everyone else gets the home screen at once and Puter is loaded when they tap "Connect". Offline,
+ * nothing is requested (the state is "out"; a later "online" event checks again).
+ */
+function useAccount(): [Account, (force?: boolean) => Promise<void>] {
+  const [a, setA] = useState<Account>(() => ({ state: puterUsed() && navigator.onLine !== false ? "loading" : "out", name: null, credit: null }));
+  const refresh = async (force = false) => {
+    if (navigator.onLine === false || (!force && !puterUsed())) return setA({ state: "out", name: null, credit: null });
     try {
       await puter.loadPuter();
     } catch {
@@ -160,11 +198,17 @@ function useAccount(): [Account, () => Promise<void>] {
       return;
     }
     if (!puter.isSignedIn()) return setA({ state: "out", name: null, credit: null });
+    markPuterUsed();
     setA((x) => ({ ...x, state: "in" }));
     const [name, credit] = await Promise.all([puter.userName(), puter.remainingCredit()]);
     setA({ state: "in", name, credit });
   };
-  useEffect(() => void refresh(), []);
+  useEffect(() => {
+    void refresh();
+    const on = () => void refresh();
+    window.addEventListener("online", on);
+    return () => window.removeEventListener("online", on);
+  }, []);
   return [a, refresh];
 }
 
@@ -177,6 +221,22 @@ function money(v: number, lang: string): string {
 
 // ---------- the screen ----------
 
+/**
+ * AIW-09: nobody should have to create a project before writing. The first time the chat opens with no
+ * project, one is made ("Personal"). Two tabs opened at the same moment take turns (a web lock, where the
+ * browser has it), and each looks again before creating, so there is one.
+ */
+async function firstProject(name: string): Promise<void> {
+  const make = async () => {
+    if ((await store.list()).some((p) => !p.deletedAt)) return;
+    const p = await store.create(name, "");
+    rememberProject(p.id);
+    void askPersistOnce();
+  };
+  if (typeof navigator !== "undefined" && navigator.locks) await navigator.locks.request("aiw.first-project", make);
+  else await make();
+}
+
 export function ChatScreen(props: { projectId?: string; sessionId?: string }): JSX.Element {
   const { t, lang } = useI18n();
   const date = useDate();
@@ -186,9 +246,15 @@ export function ChatScreen(props: { projectId?: string; sessionId?: string }): J
     : live.find((p) => p.id === lastProject())?.id ?? live[0]?.id;
   const project = live.find((p) => p.id === projectId);
   useEffect(() => void (projectId && rememberProject(projectId)), [projectId]);
+  const [failed, setFailed] = useState(false);
+  const making = useRef(false);
+  useEffect(() => {
+    if (pLoading || live.length || making.current) return;
+    making.current = true;
+    firstProject(t("defaultProject")).catch(() => setFailed(true));
+  }, [pLoading, live.length]);
 
-  if (pLoading) return <section><h1 class="large-title">{t("chTitle")}</h1><p class="muted">{t("loading")}</p></section>;
-  if (!project) {
+  if (!project && failed) {
     return (
       <section>
         <h1 class="large-title">{t("chTitle")}</h1>
@@ -201,6 +267,7 @@ export function ChatScreen(props: { projectId?: string; sessionId?: string }): J
       </section>
     );
   }
+  if (!project) return <section class="chat"><h1 class="sr-only">{t("chTitle")}</h1><p class="muted">{t("loading")}</p></section>;
   return <ChatView project={project} projects={live} sessionId={props.sessionId} key={project.id} date={date} lang={lang} />;
 }
 
@@ -226,7 +293,7 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
     if (!fresh.current || sessionsLoading) return;
     fresh.current = false;
     const earlier = sessions.some((s) => s.provider === "inapp" && !s.providerName.startsWith("import:"));
-    updateSettings((x) => ({ ...x, model: earlier && x.model === AUTO ? DEFAULT_MODEL : x.model }));
+    if (earlier && settingsRef.current.model === AUTO) updateSettings((x) => ({ ...x, model: DEFAULT_MODEL }));
   }, [sessionsLoading]);
   const [myPrompts, setMyPromptsState] = useState<MyPrompt[]>(() => cleanMyPrompts(readJson(MY_PROMPTS)));
   const setMyPrompts = (l: MyPrompt[]) => {
@@ -271,7 +338,16 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
   // the free service is used only after the user agreed once (it is another company)
   const [consent, setConsent] = useState<{ question: string; sid: string; askId: string } | null>(null);
   // AIW-08: asked once, at the first message — the pilot (it uses the free service) or a Puter sign-in
-  const [ask, setAsk] = useState<null | { kind: "pilot" | "connect"; text: string }>(null);
+  const [ask, setAsk] = useState<null | { kind: "pilot" | "connect" | "image"; text: string }>(null);
+  // AIW-09: the conversation list (titles from the first question, search), the free picture limit, the picture shown large
+  const [search, setSearch] = useState("");
+  const [index, setIndex] = useState<Map<string, { first: string; all: string }>>(new Map());
+  const [imageWait, setImageWait] = useState(0);
+  const [lightbox, setLightbox] = useState<{ alt: string; url: string } | null>(null);
+  const [installHint, setInstallHint] = useState(() => isIOS() && !isStandalone() && readJson(INSTALL_HINT) === null);
+  // AIW-09 (Adrian): the Puter credit ran out — said once, compactly, with the way on (another account, or free)
+  const [creditOut, setCreditOut] = useState(false);
+  const attachInput = useRef<HTMLInputElement>(null);
   // a message held by one of those questions, sent again once the new settings are on screen
   const [resend, setResend] = useState<string | null>(null);
   // AIW-08: what the pilot is doing now, and which model answered each question (this visit only)
@@ -297,6 +373,21 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, [session?.id, lastStep?.id, steps === null]);
+  // AIW-09: titles and search need the questions of every chat of the project (one read; refreshed on changes)
+  useEffect(() => {
+    if (sheet !== "history") return;
+    let live = true;
+    const load = () => void sessionStore.questionIndex(project.id).then((m) => live && setIndex(m), () => undefined);
+    load();
+    const off = sessionStore.subscribe(load);
+    return () => { live = false; off(); };
+  }, [sheet, project.id]);
+  // AIW-09: the seconds left until the free service makes another picture
+  useEffect(() => {
+    if (imageWait <= 0) return;
+    const id = setInterval(() => setImageWait((w) => Math.max(0, w - 1)), 1000);
+    return () => clearInterval(id);
+  }, [imageWait > 0]);
   // the newest message stays in view above the message box, unless the user scrolled up to read
   const atBottom = useRef(true);
   useEffect(() => {
@@ -348,11 +439,25 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
   const connect = async () => {
     if (account.state === "loading") return;
     try {
-      await puter.signIn();
+      await puter.signIn(); // loads Puter.js if it is not here yet
+      markPuterUsed();
     } catch (e) {
       toast({ text: t(puterKey(e)), error: true });
     }
-    await refreshAccount();
+    await refreshAccount(true);
+  };
+  /**
+   * AIW-09 (Adrian): another Puter account, in one tap — the conversation, the history and the memory stay
+   * here, whatever the account; only the next messages go through the new one.
+   */
+  const switchAccount = async () => {
+    try {
+      await puter.signOut();
+    } catch {
+      /* not signed in: nothing to leave */
+    }
+    setCreditOut(false);
+    await connect();
   };
 
   /**
@@ -458,6 +563,7 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
     } catch (e) {
       // credit finished: the pilot goes on with the free model, in the same chat (if allowed; it sees no pictures)
       if (e instanceof puter.PuterError && e.problem === "funds" && settingsRef.current.autoFree && !images.length) {
+        setCreditOut(true);
         toast({ text: t("chAutoFreeOn") });
         setPilotNote(t("plFree"));
         setStreaming("");
@@ -467,6 +573,45 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
       }
       throw e;
     }
+  };
+
+  /**
+   * AIW-09: a picture from a description — the free image service, no account. The answer saved is
+   * markdown with the picture's address; the bytes are kept on this device (media cache). The service
+   * allows one picture every 45 s: a second one too soon is refused with how long to wait.
+   */
+  const makeImage = async (sid: string, askId: string, prompt: string) => {
+    const ctrl = new AbortController();
+    abort.current = ctrl;
+    setFailure(null);
+    setStreaming("");
+    setPilotNote(t("imMaking"));
+    try {
+      const left = imageWaitLeft();
+      if (left > 0) throw new ImageError("limit", left);
+      setLastImageAt(Date.now());
+      const url = imageUrl(prompt, imageSeed());
+      await (await import("./imagefetch")).fetchImage(url, ctrl.signal);
+      await sessionStore.applyReply(sid, imageReply(prompt, url), []);
+    } catch (e) {
+      if (e instanceof ImageError) {
+        if (e.problem === "limit") {
+          setImageWait(e.wait);
+          setLastImageAt(Date.now() - (IMAGE_GAP_S - e.wait) * 1000); // the service's own clock
+        } else if (e.problem !== "network") setLastImageAt(0); // nothing was made: no need to wait
+        setFailure({ key: `imErr_${e.problem}` as Key, sessionId: sid, askId });
+      } else if (ctrl.signal.aborted) {
+        setLastImageAt(0);
+        setFailure({ key: "chErr_aborted", sessionId: sid, askId });
+      } else setFailure({ key: errorKey(e), sessionId: sid, askId });
+    } finally {
+      abort.current = null;
+      setStreaming(null);
+      setPilotNote(null);
+      setBusy(false);
+    }
+    // hands-free: the conversation goes on after a picture too
+    if (handsFreeRef.current && alive.current && shown.current === sid) listenRef.current(true);
   };
 
   const callModel = async (sid: string, askId: string, question: string, earlier: Exchange[], c: { model: string; via: Via; reasoning: boolean; eco: Economy; system: typeof system; council?: Council }, images: string[] = []) => {
@@ -509,6 +654,7 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
       if ((settingsRef.current.readAloud || handsFreeRef.current) && alive.current && voice.canSpeak()) spoken = r.text;
     } catch (e) {
       // Puter credit finished: the same question continues on the free model, if the user allows it
+      if (e instanceof puter.PuterError && e.problem === "funds") setCreditOut(true);
       if (e instanceof puter.PuterError && e.problem === "funds" && c.via === "puter" && c.model !== COUNCIL && c.model !== AUTO && settingsRef.current.autoFree) fallback = true;
       else {
         const key = e instanceof puter.PuterError ? puterKey(e, c.model === AUTO ? track.via : c.via) : errorKey(e);
@@ -544,8 +690,8 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
     await send(question, { model: FREE_MODEL, from: sid });
   };
 
-  const send = async (text = input, auto?: { model: string; from: string }) => {
-    const attached = auto ? [] : files;
+  const send = async (text = input, auto?: { model: string; from: string }, opts?: { noFiles?: boolean }) => {
+    const attached = auto || opts?.noFiles ? [] : files;
     const typed = text.trim();
     // the files go with the question (their text is saved with it; photos only by name)
     const question = attached.length ? messageWithFiles(typed || t("chFilesOnly"), attached, lang) : typed;
@@ -556,6 +702,36 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
     const members = model === COUNCIL ? st.council.members : [model];
     // the automatic switch to the free model (credit finished) does not need the Puter account
     if (!question || !(ready || (auto && !pending && alive.current))) return;
+    // AIW-09: a description to draw goes to the free picture service, in this conversation, whatever the model
+    const picture = !auto && !attached.length ? imageRequest(typed) : null;
+    if (picture) {
+      if (!st.imageConsent && !st.freeConsent && !st.pilotConsent) return setAsk({ kind: "image", text });
+      // too soon after the last picture: the text stays in the box and the countdown says when
+      const left = imageWaitLeft();
+      if (left > 0) {
+        setImageWait(left);
+        return toast({ text: fill(t("imTooSoon"), { s: String(left) }), error: true });
+      }
+      setBusy(true);
+      try {
+        let s = session;
+        if (!s || s.status === "closed") {
+          s = await sessionStore.startChat(project.id, st.councilOn ? COUNCIL : st.model, s?.id ?? null);
+          setChosen(s.id);
+          history.replaceState(null, "", chatUrl(project.id, s.id));
+        }
+        const askX = await sessionStore.ask(s.id, question, null);
+        if (text === input) {
+          setInput("");
+          if (box.current) box.current.style.height = "";
+        }
+        await makeImage(s.id, askX.id, picture);
+      } catch (e) {
+        toast({ text: t(errorKey(e)), error: true });
+        setBusy(false);
+      }
+      return;
+    }
     // AIW-08: asked once — the pilot uses the free service; a Puter model needs the account
     if (model === AUTO && !st.pilotConsent) return setAsk({ kind: "pilot", text });
     if (!auto && model !== AUTO && model !== COUNCIL && viaOf(model) === "puter" && !signedIn) return setAsk({ kind: "connect", text });
@@ -608,6 +784,12 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
     const ask = thread[i];
     const chat = sessions.find((x) => x.id === failure.sessionId);
     if (!ask || !chat) return setFailure(null);
+    const picture = imageRequest(ask.text);
+    if (picture) {
+      if (imageWait > 0 || chat.status !== "open") return;
+      setBusy(true);
+      return makeImage(failure.sessionId, failure.askId, picture);
+    }
     const current = settings.councilOn ? COUNCIL : model;
     const same = chat.providerName === current && chat.status === "open" && ask.pack?.sha256 === (await sha256(system.text));
     if (hadPictures(ask.text)) {
@@ -702,6 +884,45 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
 
   const newChat = () => choose(null);
 
+  // AIW-09: what people expect from a chat — the same question again, a question back in the box, sharing
+  const lastReply = [...sessionSteps].reverse().find((x) => x.kind === "reply");
+  const regenerate = (reply: Exchange) => {
+    const i = sessionSteps.indexOf(reply);
+    const q = i > 0 ? sessionSteps[i - 1] : undefined;
+    if (!q || q.kind !== "ask" || !ready) return;
+    if (hadPictures(q.text)) {
+      setInput(questionOnly(q.text));
+      toast({ text: t("chRetryPictures") });
+      return;
+    }
+    void send(q.text, undefined, { noFiles: true });
+  };
+  const edit = (x: Exchange) => usePrompt(questionOnly(x.text), true);
+  /** A picture whose bytes are not on this device may be loaded on request: with the consent, outside the 45 s. */
+  const canLoadImage = (): string | null => {
+    const st = settingsRef.current;
+    if (!st.imageConsent && !st.freeConsent && !st.pilotConsent) return t("imNoConsent");
+    const left = imageWaitLeft();
+    if (left > 0) return fill(t("imTooSoon"), { s: String(left) });
+    setLastImageAt(Date.now());
+    return null;
+  };
+  const canShare = typeof navigator.share === "function";
+  const share = async (text: string, title?: string) => {
+    try {
+      await navigator.share({ text, title });
+    } catch {
+      /* the person closed the share sheet */
+    }
+  };
+  const titleOf = (s: Session) => chatTitle(s, index.get(s.id)?.first ?? (s.id === session?.id ? sessionSteps.find((x) => x.kind === "ask")?.text : undefined));
+  const conversationText = () => conversationMarkdown({ title: session ? titleOf(session) : "", project: project.name, assistant: session ? assistantName(session) : "", steps: thread, lang, date: props.date });
+  const exportConversation = async () => {
+    if (!session) return;
+    const shared = await deliver(exportFileName(titleOf(session)), conversationText(), "text/markdown;charset=utf-8");
+    if (!shared) toast({ text: t("chExported") });
+  };
+
   const onKey = (e: KeyboardEvent) => {
     // Enter sends on a keyboard; on a phone Enter is a new line (the send button is right there)
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing && matchMedia("(pointer: fine)").matches) {
@@ -712,6 +933,15 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
 
   const preset = presetOf(eco);
   const prompts = builtInPrompts(lang);
+  // AIW-09: the welcome — on an empty chat; the "why here" chips only for someone who never chatted here
+  const welcome = thread.length === 0 && streaming === null && !pending;
+  const newcomer = !sessionsLoading && !sessions.some((s) => s.provider === "inapp");
+  const noImports = !sessions.some((s) => s.providerName.startsWith("import:"));
+  const starters = starterPrompts(lang);
+  const useStarter = (p: (typeof starters)[number]) => {
+    usePrompt(p.text, !!p.open);
+    if (p.action === "attach") attachInput.current?.click();
+  };
 
   return (
     <section class="chat" data-chat={project.id}>
@@ -720,7 +950,7 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
         <button type="button" class="icon-button" data-action="history" aria-label={t("chHistory")} title={t("chHistory")} onClick={() => setSheet("history")}>
           <span aria-hidden="true">☰</span>{chats.length > 0 && <span class="count">{chats.length}</span>}
         </button>
-        <h1 class="sr-only">{t("chTitle")}</h1>
+        {!welcome && <h1 class="sr-only">{t("chTitle")}</h1>}
         {settings.councilOn ? (
           <button type="button" class="model-chip acc" data-action="council" data-model={COUNCIL} onClick={() => setSheet("council")}>
             ⚖ {fill(t("chCouncilOnLabel"), { n: String(settings.council.members.length) })} ▾
@@ -737,26 +967,40 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
       </div>
       <p class="chat-project muted">{project.name}</p>
 
-      {account.state === "error" && (via === "puter" || isAuto) && (
+      {account.state === "error" && (via === "puter" || (isAuto && puterUsed())) && (
         <div class="card error-card" role="alert" data-puter-error>
           <p>{t("chLoadError")}</p>
           <button type="button" class="button secondary small-button" onClick={() => void refreshAccount()}>{t("chRetry")}</button>
         </div>
       )}
 
-      {thread.length === 0 && streaming === null && (
-        <div class="hero-empty" data-empty-chat>
+      {welcome && (
+        <div class="hero-empty welcome" data-empty-chat>
           <div class="orb"><IconSpark /></div>
-          <p class="lead">{fill(t("chEmpty"), { project: project.name })}</p>
-          <p class="muted">{fill(t("chEmptyHint"), { n: String(entries.filter((e) => e.confirmation === "confirmed" && !e.archived).length) })}</p>
+          <h1 class="welcome-title">{t("wcTitle")}</h1>
+          <p class="muted">{newcomer ? t("wcSubNew") : fill(t("wcSub"), { project: project.name, n: String(entries.filter((e) => e.confirmation === "confirmed" && !e.archived).length) })}</p>
           {via === "free" && !isAuto && <p class="muted small" data-free-note>{t("chFreeNote")}</p>}
+          {newcomer && (
+            <ul class="why-chips" data-why-chips>
+              <li>✦ {t("wcChip1")}</li>
+              <li>🆓 {t("wcChip2")}</li>
+              <li>🔒 {t("wcChip3")}</li>
+            </ul>
+          )}
           <div class="starter">
-            {prompts.slice(0, 4).map((p) => (
-              <button key={p.id} type="button" data-starter={p.id} disabled={!ready} onClick={() => void send(p.text)}>
-                <b>{p.icon} {p.label}</b>{p.text.length > 70 ? p.text.slice(0, 68) + "…" : p.text}
+            {starters.map((p) => (
+              <button key={p.id} type="button" data-starter={p.id} disabled={!ready} onClick={() => useStarter(p)}>
+                <b>{p.icon} {p.label}</b>
               </button>
             ))}
           </div>
+          {noImports && <a class="import-chip" href="#/import" data-action="import-link">⇣ {t("wcImport")}</a>}
+          {installHint && newcomer && (
+            <div class="install-hint" data-install-hint>
+              <span>📲 {t("wcInstall")}</span>
+              <button type="button" class="icon-button" aria-label={t("close")} onClick={() => { writeJson(INSTALL_HINT, 1); setInstallHint(false); }}>✕</button>
+            </div>
+          )}
         </div>
       )}
 
@@ -767,11 +1011,16 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
             return (
               <li key={x.id} class="msg me" data-msg="ask">
                 <AskBubble text={x.text} label={t("chFiles")} />
-                <div class="msg-meta">{props.date(x.createdAt)}</div>
+                <div class="msg-meta">
+                  <span>{props.date(x.createdAt)}</span>
+                  <button type="button" class="pill small" data-action="edit" disabled={busy || !!pending} aria-label={t("chEdit")} onClick={() => edit(x)}>✎ {t("chEdit")}</button>
+                </div>
                 {failure?.askId === x.id && (
                   <div class="msg-tools" data-failure>
                     <span class="form-error" role="alert">{t(failure.key)}</span>
-                    <button type="button" class="pill acc" data-action="retry" disabled={busy || !reachable} onClick={() => void retry()}>↻ {t("chRetry")}</button>
+                    <button type="button" class="pill acc" data-action="retry" disabled={busy || imageWait > 0 || (!reachable && !imageRequest(x.text))} data-wait={imageWait || undefined} onClick={() => void retry()}>
+                      ↻ {t("chRetry")}{imageWait > 0 ? <span aria-live="off"> ({imageWait} s)</span> : null}
+                    </button>
                   </div>
                 )}
                 {u && u.cut && <div class="msg-meta warn-text">{t("chCut")}</div>}
@@ -782,15 +1031,20 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
             const before = thread[thread.indexOf(x) - 1];
             const u = before ? usage[before.id] : undefined;
             return (
-              <li key={x.id} class="msg ai" data-msg="reply">
-                <div class="bubble"><Markdown text={stripBlock(x.text)} renderCode={(b) => <CodeTools block={b} onRun={setRunHtml} />} /></div>
+              <li key={x.id} class={"msg ai" + (imageOfReply(x.text) ? " picture" : "")} data-msg="reply">
+                <div class="bubble"><Markdown text={stripBlock(x.text)} renderCode={(b) => <CodeTools block={b} onRun={setRunHtml} />}
+                  renderImage={imageOfReply(x.text) ? (alt, url) => (isImageUrl(url) ? <GenImage alt={alt} url={url} canLoad={canLoadImage} onOpen={() => setLightbox({ alt, url })} /> : null) : undefined} /></div>
                 <div class="msg-meta">
-                  <span>{(() => { const o = sessions.find((s) => s.id === x.sessionId); return o ? assistantName(o) : ""; })()}</span>
+                  <span>{imageOfReply(x.text) ? t("imBy") : (() => { const o = sessions.find((s) => s.id === x.sessionId); return o ? assistantName(o) : ""; })()}</span>
                   {before && routes[before.id] && <span data-pilot-route={routes[before.id].level}>→ {nameOf(routes[before.id].model)}</span>}
                   {u && u.input > 0 && <span data-usage>↑{k(u.input)} ↓{k(u.output)} {t("chTokens")}</span>}
                   {x.proposals.length > 0 && <span>{fill(t("chProposalsSaved"), { n: String(x.proposals.length) })}</span>}
-                  <button type="button" class="pill small" onClick={async () => toast({ text: t((await copyText(stripBlock(x.text))) ? "chCopied" : "chCopyFailed") })}>{t("chCopy")}</button>
-                  {voice.canSpeak() && (
+                  {!imageOfReply(x.text) && <button type="button" class="pill small" onClick={async () => toast({ text: t((await copyText(stripBlock(x.text))) ? "chCopied" : "chCopyFailed") })}>{t("chCopy")}</button>}
+                  {x.id === lastReply?.id && session?.status === "open" && (
+                    <button type="button" class="pill small" data-action="regenerate" disabled={!ready || (imageOfReply(x.text) ? imageWait > 0 : false)} onClick={() => regenerate(x)}>↻ {t("chRegenerate")}</button>
+                  )}
+                  {canShare && !imageOfReply(x.text) && <button type="button" class="pill small" data-action="share" onClick={() => void share(stripBlock(x.text))}>⤴ {t("chShare")}</button>}
+                  {voice.canSpeak() && !imageOfReply(x.text) && (
                     <button type="button" class="pill small speak" data-action="speak" onClick={async () => {
                       if (speaking === x.id) return (voice.stopSpeaking(), setSpeaking(null));
                       setSpeaking(x.id);
@@ -825,6 +1079,16 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
 
       {/* AIW-08: the message box is always there; what is running now (voice) shows just above it */}
       <div class="composer">
+        {creditOut && (
+          <div class="credit-bar" role="status" data-credit-out>
+            <span class="credit-text">💳 {t("crOut")}</span>
+            <button type="button" class="pill acc" data-action="switch-account" disabled={busy} onClick={() => void switchAccount()}>↻ {t("crSwitch")}</button>
+            {!isAuto && model !== FREE_MODEL && (
+              <button type="button" class="pill" data-action="credit-free" onClick={() => { updateSettings((x) => ({ ...x, model: FREE_MODEL, freeConsent: true })); setCreditOut(false); }}>{t("crFree")}</button>
+            )}
+            <button type="button" class="icon-button" aria-label={t("close")} onClick={() => setCreditOut(false)}>✕</button>
+          </div>
+        )}
         {(handsFree || speaking === "auto") && (
           <div class="live-pills">
             {handsFree && <button type="button" class="pill acc" data-action="hands-free" aria-pressed={true} onClick={toggleHandsFree}>🎙 {t("chHandsFreeOn")}</button>}
@@ -845,7 +1109,7 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
         <div class="composer-row">
           <label class={"attach" + (reading ? " busy" : "")} aria-label={t("chAttach")} title={t("chAttach")} data-action="attach">
             <IconClip />
-            <input type="file" name="attach" multiple accept={ACCEPT} class="sr-only" disabled={reading || busy || !!pending}
+            <input type="file" name="attach" ref={attachInput} multiple accept={ACCEPT} class="sr-only" disabled={reading || busy || !!pending}
               onChange={(e) => { const i = e.target as HTMLInputElement; void addFiles([...(i.files ?? [])]); i.value = ""; }} />
           </label>
           {voice.canListen() && (
@@ -913,16 +1177,27 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
         onPick={(p) => (usePrompt(p.text, p.open), setSheet(null))} list={myPrompts} draft={input} onChange={setMyPrompts} onUse={(p) => (usePrompt(p.text), setSheet(null))} onClose={() => setSheet(null)} />}
       {sheet === "history" && (
         <Dialog title={t("chHistory")} onClose={() => setSheet(null)} id="chat-history" dismissable>
+          {/* AIW-09: a title from the first question, search in titles and questions, the way in for old conversations */}
+          {chats.length > 3 && (
+            <input class="search" name="search-chats" type="search" value={search} placeholder={t("chSearchChats")} autoComplete="off"
+              onInput={(e) => setSearch((e.target as HTMLInputElement).value)} />
+          )}
           {chats.length === 0 ? <p class="muted">{t("chHistoryEmpty")}</p> : (
             <div class="menu">
-              {chats.map((s) => (
-                <a key={s.id} class="menu-item" href={chatUrl(project.id, s.id)} data-chat-item={s.id} onClick={(e) => { e.preventDefault(); choose(s.id); setSheet(null); }}>
-                  {s.task ? `${s.task} · ` : ""}{assistantName(s)} · {props.date(s.updatedAt)}{s.id === session?.id ? " ✓" : ""}
+              {searchChats(chats, search, (c) => `${titleOf(c)}\n${index.get(c.id)?.all ?? ""}`).map((s) => (
+                <a key={s.id} class="menu-item chat-row" href={chatUrl(project.id, s.id)} data-chat-item={s.id} aria-current={s.id === session?.id ? "true" : undefined}
+                  onClick={(e) => { e.preventDefault(); choose(s.id); setSheet(null); }}>
+                  <span class="chat-row-title">{titleOf(s) || t("chUntitled")}</span>
+                  <span class="chat-row-sub">{assistantName(s)} · {props.date(s.updatedAt)}{s.status === "closed" && !s.providerName.startsWith("import:") ? ` · ${t("chClosed")}` : ""}</span>
                 </a>
               ))}
+              {search && searchChats(chats, search, (c) => `${titleOf(c)}\n${index.get(c.id)?.all ?? ""}`).length === 0 && <p class="muted">{t("chNoMatch")}</p>}
             </div>
           )}
-          <div class="sheet-actions single"><button type="button" class="button secondary" onClick={() => setSheet(null)}>{t("close")}</button></div>
+          <div class="sheet-actions">
+            <a class="button secondary link-button" href="#/import" data-action="import-link" onClick={() => setSheet(null)}>⇣ {t("chImportLink")}</a>
+            <button type="button" class="button" data-action="new-chat-sheet" onClick={() => { newChat(); setSheet(null); }}>＋ {t("chNew")}</button>
+          </div>
         </Dialog>
       )}
       {sheet === "menu" && (
@@ -937,6 +1212,8 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
               ⚡ {t("chEconomy")}: {preset ? t(`chPreset_${preset}` as Key) : t("chPresetCustom")}{saved > 0 ? ` · −${saved}%` : ""}
             </button>
             <button type="button" class="menu-item" data-action="prompts" onClick={() => setSheet("prompts")}>✎ {t("chPrompts")}</button>
+            <button type="button" class="menu-item" data-action="export-chat" disabled={!session || thread.length === 0} onClick={() => { setSheet(null); void exportConversation(); }}>⤓ {t("chExport")}</button>
+            {canShare && <button type="button" class="menu-item" data-action="share-chat" disabled={!session || thread.length === 0} onClick={() => { setSheet(null); void share(conversationText(), session ? titleOf(session) : undefined); }}>⤴ {t("chShareChat")}</button>}
             <button type="button" class={"menu-item" + (settings.councilOn ? " acc" : "")} data-action="council-sheet" onClick={() => setSheet("council")}>⚖ {t("chCouncil")}{settings.councilOn ? " ✓" : ""}</button>
             {voice.canListen() && (
               <button type="button" class="menu-item" data-action="hands-free" aria-pressed={handsFree} disabled={!reachable} onClick={() => { setSheet(null); toggleHandsFree(); }}>
@@ -984,13 +1261,29 @@ function ChatView(props: { project: Project; projects: Project[]; sessionId?: st
           </div>
         </Dialog>
       )}
+      {ask?.kind === "image" && (
+        <Dialog title={t("imConsentTitle")} onClose={() => setAsk(null)} id="image-consent">
+          <p>{t("imConsentText")}</p>
+          <div class="sheet-actions">
+            <button type="button" class="button secondary" onClick={() => setAsk(null)}>{t("chConsentNo")}</button>
+            <button type="button" class="button" data-action="image-yes" onClick={() => {
+              updateSettings((x) => ({ ...x, imageConsent: true }));
+              setAsk(null);
+              setResend(ask.text);
+            }}>{t("imConsentYes")}</button>
+          </div>
+        </Dialog>
+      )}
+      {lightbox && <Lightbox alt={lightbox.alt} url={lightbox.url} canLoad={canLoadImage} onClose={() => setLightbox(null)} />}
       {sheet === "account" && (
         <Dialog title={t("chAccount")} onClose={() => setSheet(null)} id="chat-account" dismissable>
           <p>{fill(t("chAccountText"), { name: account.name ?? "Puter" })}</p>
           {account.credit && <p class="muted">{t("chCreditLeft")}: {account.credit.unit === "usd" ? money(account.credit.value, lang) : `${Math.round(account.credit.value)} ${t("chCredits")}`}</p>}
           <p class="muted small-left">{t("chAccountPay")}</p>
-          <div class="sheet-actions single">
-            <button type="button" class="button secondary" data-action="sign-out" onClick={async () => { await puter.signOut(); await refreshAccount(); setSheet(null); }}>{t("chSignOut")}</button>
+          <p class="muted small-left">{t("crKeep")}</p>
+          <div class="sheet-actions">
+            <button type="button" class="button secondary" data-action="sign-out" onClick={async () => { await puter.signOut(); await refreshAccount(true); setSheet(null); }}>{t("chSignOut")}</button>
+            <button type="button" class="button secondary" data-action="switch-account" onClick={() => { setSheet(null); void switchAccount(); }}>↻ {t("crSwitch")}</button>
           </div>
           <div class="sheet-actions single"><button type="button" class="button" data-action="close-sheet" onClick={() => setSheet(null)}>{t("close")}</button></div>
         </Dialog>
@@ -1029,6 +1322,109 @@ function AskBubble(props: { text: string; label: string }): JSX.Element {
 /** The proposals block is reviewed separately: the bubble shows the answer without it. */
 function stripBlock(text: string): string {
   return text.replace(/^[ \t]*(```|~~~)[ \t]*(aiw-propuneri|aiw-proposals)[ \t]*\n[\s\S]*?(^[ \t]*\1[ \t]*$|(?![\s\S]))/gim, "").trim();
+}
+
+/** Hands the person a file (the export of a conversation, a picture). */
+function download(name: string, data: string | Blob, type = "text/plain;charset=utf-8"): void {
+  const url = URL.createObjectURL(typeof data === "string" ? new Blob([data], { type }) : data);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+/**
+ * On an iPhone (above all the app on the home screen, where a download link may just open the file),
+ * the file goes through the share sheet — Files, Mail, AirDrop…; elsewhere it is downloaded.
+ * Returns true when the share sheet took it.
+ */
+async function deliver(name: string, data: string | Blob, type = "text/plain;charset=utf-8"): Promise<boolean> {
+  const blob = typeof data === "string" ? new Blob([data], { type }) : data;
+  if (isIOS() && typeof navigator.share === "function") {
+    const file = new File([blob], name, { type: blob.type || type });
+    if (navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: name });
+        return true;
+      } catch {
+        return true; // the person closed the sheet: nothing else to do
+      }
+    }
+  }
+  download(name, blob);
+  return false;
+}
+
+/** The free picture service, asked for a picture whose bytes are not on this device (one request, kept). */
+async function loadPicture(url: string, t: (k: Key) => string, canLoad: () => string | null): Promise<void> {
+  const why = canLoad();
+  if (why) return toast({ text: why, error: true });
+  try {
+    await (await import("./imagefetch")).fetchImage(url);
+  } catch (e) {
+    const problem = e instanceof ImageError ? e.problem : "unknown";
+    toast({ text: t(`imErr_${problem}` as Key), error: true });
+  }
+}
+
+/**
+ * AIW-09: a picture made in the chat, from the device's cache; a tap shows it large. Bytes that are not
+ * here (another device, after an archive import, or made room for) are never fetched on their own: a
+ * placeholder offers to load them, under the same consent and the same 45 s rule as a new picture.
+ */
+function GenImage(props: { alt: string; url: string; canLoad: () => string | null; onOpen: () => void }): JSX.Element {
+  const { t } = useI18n();
+  const media = useMedia(props.url);
+  const [loading, setLoading] = useState(false);
+  if (media.status === "loading") return <span class="gen-image-wait" aria-hidden="true" />;
+  if (media.status === "missing") {
+    return (
+      <button type="button" class="gen-image missing" data-image-missing disabled={loading} onClick={async () => { setLoading(true); await loadPicture(props.url, t, props.canLoad); setLoading(false); }}>
+        <span>🎨 {props.alt}</span><b>{loading ? t("imMaking") : t("imLoad")}</b>
+      </button>
+    );
+  }
+  return (
+    <button type="button" class="gen-image" data-gen-image onClick={props.onOpen} aria-label={`${t("imOpen")}: ${props.alt}`}>
+      <img src={media.src} alt={props.alt} decoding="async" />
+    </button>
+  );
+}
+
+function Lightbox(props: { alt: string; url: string; canLoad: () => string | null; onClose: () => void }): JSX.Element {
+  const { t } = useI18n();
+  const media = useMedia(props.url);
+  const cached = media.status === "cached" ? media.blob : null;
+  const save = async () => {
+    if (!cached) return;
+    const shared = await deliver(exportFileName(props.alt).replace(/\.md$/, ".jpg"), cached);
+    if (!shared) toast({ text: t("imSaved") });
+  };
+  const shareIt = async () => {
+    if (!cached) return;
+    try {
+      const file = new File([cached], "imagine.jpg", { type: cached.type || "image/jpeg" });
+      if (navigator.canShare?.({ files: [file] })) await navigator.share({ files: [file], text: props.alt });
+      else await navigator.share({ text: props.alt });
+    } catch {
+      /* closed */
+    }
+  };
+  return (
+    <Dialog title={t("imLightboxTitle")} onClose={props.onClose} id="image-lightbox" dismissable>
+      {media.status === "cached" && <img class="lightbox-img" src={media.src} alt={props.alt} />}
+      {media.status === "missing" && <p class="muted">{t("imUnavailable")}</p>}
+      <p class="muted small-left">{props.alt}</p>
+      <div class="sheet-actions">
+        <button type="button" class="button secondary" data-action="save-image" disabled={!cached} onClick={() => void save()}>⤓ {t("imSave")}</button>
+        {typeof navigator.share === "function" && <button type="button" class="button secondary" data-action="share-image" disabled={!cached} onClick={() => void shareIt()}>⤴ {t("chShare")}</button>}
+        <button type="button" class="button" onClick={props.onClose}>{t("close")}</button>
+      </div>
+    </Dialog>
+  );
 }
 
 function countProposals(text: string, refs: Record<string, string>, entries: Parameters<typeof parseReply>[2]): number {

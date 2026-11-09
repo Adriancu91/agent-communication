@@ -39,6 +39,33 @@ const BUILT_IN: Record<PackLang, PromptTemplate[]> = {
 
 export const builtInPrompts = (lang: PackLang): PromptTemplate[] => BUILT_IN[lang];
 
+/** AIW-09: the welcome screen's suggestions — what people come to an AI for. Each fills the message box; two also act. */
+export interface Starter extends PromptTemplate {
+  /** "attach": opens the file picker as well; "image": the picture command */
+  action?: "attach" | "image";
+}
+
+const STARTERS: Record<PackLang, Starter[]> = {
+  ro: [
+    { id: "doc", icon: "📄", label: "Rezumă un document", text: "Rezumă documentul atașat și spune-mi ce e important în el.", action: "attach" },
+    { id: "image", icon: "🎨", label: "Fă o imagine", text: "/imagine ", open: true, action: "image" },
+    { id: "email", icon: "✉️", label: "Scrie un email", text: "Scrie un email politicos și scurt despre: ", open: true },
+    { id: "app", icon: "⌘", label: "Fă o aplicație", text: BUILT_IN.ro.find((p) => p.id === "app")!.text, open: true },
+    { id: "translate", icon: "🌐", label: "Tradu un text", text: "Tradu în engleză, natural, textul de mai jos:\n\n", open: true },
+    { id: "explain", icon: "💡", label: "Explică simplu", text: "Explică-mi simplu, pe înțelesul oricui: ", open: true },
+  ],
+  en: [
+    { id: "doc", icon: "📄", label: "Summarize a document", text: "Summarize the attached document and tell me what matters in it.", action: "attach" },
+    { id: "image", icon: "🎨", label: "Make a picture", text: "/imagine ", open: true, action: "image" },
+    { id: "email", icon: "✉️", label: "Write an email", text: "Write a short, polite email about: ", open: true },
+    { id: "app", icon: "⌘", label: "Make an app", text: BUILT_IN.en.find((p) => p.id === "app")!.text, open: true },
+    { id: "translate", icon: "🌐", label: "Translate a text", text: "Translate the text below into Romanian, naturally:\n\n", open: true },
+    { id: "explain", icon: "💡", label: "Explain simply", text: "Explain this to me simply, so anyone can follow: ", open: true },
+  ],
+};
+
+export const starterPrompts = (lang: PackLang): Starter[] => STARTERS[lang];
+
 export const MY_PROMPTS_MAX = 30;
 export const MY_PROMPT_LABEL_MAX = 30;
 export const MY_PROMPT_TEXT_MAX = 2000;
