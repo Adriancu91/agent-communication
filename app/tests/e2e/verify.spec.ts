@@ -9,7 +9,10 @@ import { join, resolve } from "node:path";
 import { chromium, expect, test, type BrowserContext, type Page } from "@playwright/test";
 
 // AIW-06.1 (Adrian): the Launcher tab became Import (the launcher page itself is checked in shell.spec)
-const ROUTES = ["proiecte", "memorie", "continuitate", "import", "setari"];
+// AIW-09 (Adrian): four tabs — the chat is the home screen; Continuity and Import moved to Settings → Tools.
+// (Puter.js, not pre-cached on purpose, is loaded only for someone who signed in before — so the chat opens
+// offline too, without a failed request.)
+const ROUTES = ["chat", "proiecte", "memorie", "setari"];
 const DIST = resolve(new URL(".", import.meta.url).pathname, "../../dist");
 
 function startServer(port: number): ChildProcess {

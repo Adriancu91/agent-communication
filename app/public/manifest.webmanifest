@@ -3,7 +3,7 @@
   "short_name": "AI Workspace",
   "description": "Proiecte, memorie și continuitate între AI-uri. Datele rămân pe dispozitivul tău.",
   "lang": "ro",
-  "start_url": "./#/proiecte",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "background_color": "#f6f5f2",

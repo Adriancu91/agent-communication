@@ -4,3 +4,5 @@ export * from "./prompts";
 export * from "./attachments";
 export * from "./council";
 export * from "./pilot";
+export * from "./images";
+export * from "./history";

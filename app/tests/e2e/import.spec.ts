@@ -26,7 +26,9 @@ test("import from a Claude export, then continue the conversation in the chat fo
 
   await setRo(page);
   const pid = await newProject(page, "Firma");
-  await page.locator('.tab[data-route="import"]').click();
+  // AIW-09: Import left the tab bar; it is reached from Settings → Tools (and from the chat's history)
+  await page.locator('.tab[data-route="setari"]').click();
+  await page.locator('[data-tools] a[data-route="import"]').click();
   await expect(page.locator("h1")).toHaveText("Import");
   await page.locator('input[name="export"]').setInputFiles({ name: "conversations.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(CLAUDE)) });
   await expect(page.locator("[data-conversations]")).toHaveAttribute("data-conversations", "2");

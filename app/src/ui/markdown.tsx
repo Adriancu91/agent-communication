@@ -1,5 +1,7 @@
 // AIW-07: answers shown with light formatting — headings, bold, italic, inline code, code blocks, lists,
 // links as plain text. Built as Preact elements (never HTML strings), so nothing in an answer can run.
+// AIW-09: a line that is only a picture, `![description](address)`, is handed to `renderImage` — the
+// caller decides which addresses may be shown as pictures (anything else stays text).
 import type { ComponentChildren, JSX } from "preact";
 
 /** Inline: **bold**, *italic* / _italic_, `code`. Everything else stays text. */
@@ -37,7 +39,9 @@ export function codeBlocks(text: string): CodeBlock[] {
   return [...text.matchAll(/^[ \t]*```[ \t]*([\w+-]*)[^\n]*\n([\s\S]*?)^[ \t]*```[ \t]*$/gm)].map((m) => ({ lang: m[1].toLowerCase(), code: m[2] }));
 }
 
-export function Markdown(props: { text: string; renderCode?: (b: CodeBlock, i: number) => JSX.Element | null }): JSX.Element {
+const IMAGE_LINE = /^\s*!\[([^\]\n]*)\]\((\S+)\)\s*$/;
+
+export function Markdown(props: { text: string; renderCode?: (b: CodeBlock, i: number) => JSX.Element | null; renderImage?: (alt: string, url: string) => JSX.Element | null }): JSX.Element {
   const lines = props.text.replace(/\r\n?/g, "\n").split("\n");
   const blocks: JSX.Element[] = [];
   let i = 0;
@@ -61,6 +65,15 @@ export function Markdown(props: { text: string; renderCode?: (b: CodeBlock, i: n
       );
       codeIndex++;
       continue;
+    }
+    const img = props.renderImage ? IMAGE_LINE.exec(line) : null;
+    if (img) {
+      const el = props.renderImage!(img[1], img[2]);
+      if (el) {
+        blocks.push(<div class="md-image" key={`i${n++}`}>{el}</div>);
+        i++;
+        continue;
+      }
     }
     const h = /^(#{1,4})\s+(.*)$/.exec(line);
     if (h) {

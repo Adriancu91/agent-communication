@@ -69,7 +69,8 @@ async function project(page: Page) {
 
 async function openChat(page: Page, pid: string, connect = true) {
   await page.goto(`./#/chat/${encodeURIComponent(pid)}`);
-  await expect(page.locator("h1")).toHaveText("Chat AI");
+  // AIW-09: an empty chat greets the person (its heading); a chat with messages keeps the hidden "Chat AI" heading
+  await expect(page.locator("h1")).toHaveText(/Chat AI|Salut! Cu ce te ajut\?/);
   if (connect) {
     // AIW-08: no connect card in front of the chat any more; the account is in the Options menu
     await menu(page, "account");
@@ -107,7 +108,9 @@ test("connect once, ask, the answer streams in and is saved with the question", 
   // the saving is shown before sending (AIW-06.1: on the Saving button, details in its sheet, not over the box)
   await expect(page.locator('[data-action="economy"]')).toContainText(/−\d+%/);
   await page.keyboard.press("Escape");
-  await expect(page.locator("[data-empty-chat]")).toContainText("Oferta Brăila");
+  // AIW-09: the project's name is on the line under the top bar (the welcome itself greets the person)
+  await expect(page.locator(".chat-project")).toHaveText("Oferta Brăila");
+  await expect(page.locator("[data-empty-chat]")).toBeVisible();
   await expect(page.locator(".composer [data-estimate]")).toHaveCount(0);
 
   await queue(page, "Suntem la etapa de ofertă. Prețul rămâne 4,2 lei/kg.");
@@ -145,7 +148,10 @@ test("proposals in an answer wait for review; accepted ones enter the official m
 \`\`\`aiw-propuneri
 [{"tip": "pas", "titlu": "Sună clientul vineri"}, {"tip": "informatie", "titlu": "Certificatul a fost cerut", "rezolva": "P1"}]
 \`\`\``);
-  await page.locator('[data-starter="next"]').click();
+  // AIW-09: the welcome's suggestions fill the box instead of sending; the ready-made prompt is in the Prompts sheet
+  await menu(page, "prompts");
+  await page.locator('[data-prompt="next"]').click();
+  await page.locator('[data-action="send"]').click();
   const card = page.locator("[data-pending]");
   await expect(card).toContainText("2 propuneri pentru memorie");
   await expect(page.locator('[data-msg="pending"] .bubble')).toHaveText("Propun doi pași."); // the block is not shown as text
@@ -224,6 +230,33 @@ test("an error is explained and the question can be retried without being saved 
   expect(c.messages.filter((m) => m.role === "user")).toHaveLength(1);
 });
 
+test("credit finished: a compact notice offers another account — the conversation stays here (AIW-09, Adrian)", async ({ page }) => {
+  const pid = await project(page);
+  await openChat(page, pid);
+  await page.locator('[data-action="model"]').click();
+  await page.locator('#model-sheet input[name="auto-free"]').uncheck();
+  await page.keyboard.press("Escape");
+  await queue(page, { error: { status: 402, message: "insufficient funds" } }, "Merge cu noul cont.");
+  await send(page, "Test");
+  await expect(page.locator("[data-failure]")).toContainText("Creditul din contul Puter s-a terminat");
+  const bar = page.locator("[data-credit-out]");
+  await expect(bar).toContainText("rămân aici");
+  // another account: sign out + sign in, in one tap; the chat and its question are still here
+  await bar.locator('[data-action="switch-account"]').click();
+  await expect(bar).toHaveCount(0);
+  await expect(page.locator('[data-msg="ask"] .bubble')).toHaveText("Test");
+  await menuOpen(page);
+  await expect(page.locator('[data-action="account"]')).toHaveAttribute("data-account", "in");
+  await page.keyboard.press("Escape");
+  await page.locator('[data-action="retry"]').click();
+  await expect(page.locator('[data-msg="reply"] .bubble')).toHaveText("Merge cu noul cont.");
+  await expect(page.locator('[data-msg="ask"]')).toHaveCount(1);
+  // the account sheet offers the switch too
+  await menu(page, "account");
+  await expect(page.locator('#chat-account [data-action="switch-account"]')).toBeVisible();
+  await expect(page.locator("#chat-account")).toContainText("rămân în aplicație");
+});
+
 test("templates: a ready-made one fills the box; my own are saved and reused", async ({ page }) => {
   const pid = await project(page);
   await openChat(page, pid);
@@ -244,10 +277,15 @@ test("templates: a ready-made one fills the box; my own are saved and reused", a
   await expect(page.locator("#chat-input")).toHaveValue("Rezumă oferta în 3 rânduri.");
 });
 
-test("without a project the chat explains what to do; nothing is loaded from outside", async ({ page }) => {
+test("without a project the chat makes the first one itself; nothing is loaded from outside", async ({ page }) => {
+  // AIW-09 (Adrian): nobody has to create a project before writing — the chat makes "Personal" (home.spec checks the rest)
+  const external: string[] = [];
+  page.on("request", (r) => { if (!/^https?:\/\/(localhost|127\.0\.0\.1)/.test(r.url())) external.push(r.url()); });
   await setRo(page);
   await page.goto("./#/chat");
-  await expect(page.locator(".hero-empty")).toContainText("Pentru chat ai nevoie de un proiect.");
+  await expect(page.locator(".chat-project")).toHaveText("Personal");
+  await expect(page.locator("#chat-input")).toBeVisible();
+  expect(external).toEqual([]);
 });
 
 test("the chat fits the screen in light and dark: no sideways scrolling, touch targets at least 44 px", async ({ page }) => {

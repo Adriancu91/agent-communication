@@ -23,9 +23,12 @@ describe.runIf(built)("built app (run `npm run build` first)", () => {
     expect(csp).toContain("object-src 'none'");
     // AIW-06 (approved by the owner): the in-app chat may reach exactly Puter's API and, AIW-06.1 (asked by the
     // owner), the free Pollinations text service; nothing else
-    const allowed = " https://api.puter.com wss://api.puter.com https://text.pollinations.ai";
+    // AIW-09: the free picture service (pictures are fetched, then shown from the device's cache)
+    const allowed = " https://api.puter.com wss://api.puter.com https://text.pollinations.ai https://image.pollinations.ai";
     expect(/connect-src ([^;]+)/.exec(csp)?.[1].trim()).toBe("'self'" + allowed);
-    expect(csp.replace(allowed, "")).not.toMatch(/unsafe-inline|unsafe-eval|\*|https?:|wss?:/);
+    // AIW-09: pictures made in the chat are shown from that service's address when the device's cache lacks them
+    expect(/img-src ([^;]+)/.exec(csp)?.[1].trim()).toBe("'self' data: blob: https://image.pollinations.ai");
+    expect(csp.replace(allowed, "").replace(" https://image.pollinations.ai", "")).not.toMatch(/unsafe-inline|unsafe-eval|\*|https?:|wss?:/);
   });
 
   it("contains no paid API address and no external script, font or tracker", () => {
@@ -65,8 +68,17 @@ describe.runIf(built)("built app (run `npm run build` first)", () => {
     // AIW-06.1 (asked by the owner): the chat's free mode is the one exception — a separate file, loaded only
     // when the free model is used, whose only address is the free Pollinations text service
     let free = 0;
+    let pictures = 0;
     for (const f of all(join(DIST, "assets")).filter((p) => p.endsWith(".js"))) {
       const code = readFileSync(f, "utf8");
+      // AIW-09 (asked by the owner): the second exception — the free picture service, again a separate file
+      // loaded only when a picture is made; it may fetch only from that service
+      if (/(^|\/)imagefetch-[\w-]+\.js$/.test(f)) {
+        pictures++;
+        expect(code.match(/https?:\/\/[a-z0-9.-]+/gi)?.filter((u) => u !== "https://image.pollinations.ai") ?? [], f).toEqual([]);
+        expect(code, f).not.toMatch(/XMLHttpRequest|WebSocket|sendBeacon|EventSource|RTCPeerConnection|importScripts/);
+        continue;
+      }
       if (code.includes("https://text.pollinations.ai/openai")) {
         free++;
         expect(code.match(/https?:\/\/[a-z0-9.-]+/gi)?.filter((u) => u !== "https://text.pollinations.ai"), f).toEqual([]);
@@ -82,6 +94,7 @@ describe.runIf(built)("built app (run `npm run build` first)", () => {
       expect(code, f).not.toMatch(/\bfetch\(|XMLHttpRequest|WebSocket|sendBeacon|EventSource|RTCPeerConnection|importScripts/);
     }
     expect(free).toBe(1);
+    expect(pictures).toBe(1);
   });
 
   it("the offline worker ignores Vary (servers send Vary: Origin; without this, offline loads fail)", () => {

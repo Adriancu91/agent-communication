@@ -2,8 +2,10 @@ import { spawn } from "node:child_process";
 import { expect, test, type Page } from "@playwright/test";
 
 // AIW-06.1 (Adrian): the Launcher tab became Import; the launcher page is still checked (PAGES), reached from Continuity
-const ROUTES = ["proiecte", "memorie", "continuitate", "import", "setari"] as const;
-const PAGES = [...ROUTES, "lansator"] as const;
+// AIW-09 (Adrian): the chat is the home screen and the tab bar has four tabs; Continuity and Import keep
+// their pages (reached from Settings → Tools), so they stay in PAGES
+const ROUTES = ["chat", "proiecte", "memorie", "setari"] as const;
+const PAGES = [...ROUTES, "continuitate", "import", "lansator"] as const;
 
 /** Records every request that leaves the app's own origin, and every page error. */
 function watch(page: Page) {
@@ -31,7 +33,7 @@ test("every screen opens, without errors and without leaving the device", async 
     await expect(page.locator("h1")).toBeVisible();
   }
   await page.goBack();
-  await expect(page).toHaveURL(/#\/import$/);
+  await expect(page).toHaveURL(/#\/memorie$/);
   expect(w.external).toEqual([]);
   expect(w.errors).toEqual([]);
 });

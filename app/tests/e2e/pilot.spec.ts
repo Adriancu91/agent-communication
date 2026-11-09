@@ -50,7 +50,8 @@ async function setup(page: Page, opts: { signed: boolean; dispatch?: string | 42
     await r.fulfill({ status: 200, headers: { "content-type": "text/event-stream", "access-control-allow-origin": "*" }, body: SSE(String(reply)) });
   });
   await setRo(page);
-  if (opts.signed) await page.evaluate(() => localStorage.setItem("fake.puter", "1"));
+  // AIW-09: Puter.js is loaded at start only for someone who signed in before (the app's note of it)
+  if (opts.signed) await page.evaluate(() => { localStorage.setItem("fake.puter", "1"); localStorage.setItem("aiw.puter.used", "1"); });
   const pid = await newProject(page, "Oferta Brăila");
   await openMemory(page, pid);
   await addEntry(page, "decision", "Preț 4,2 lei/kg", "Stabilit cu clientul", true);
@@ -184,9 +185,13 @@ test("choosing a model myself: the pilot is not used and nothing goes to the fre
   expect(free).toHaveLength(0);
 });
 
-test("a starter suggestion tapped before the consent is still sent after it", async ({ page }) => {
+test("a suggestion fills the box; a message sent before the consent is still sent after it", async ({ page }) => {
   const { free } = await setup(page, { signed: false });
-  await page.locator("[data-starter]").first().click();
+  // AIW-09: a suggestion fills the box (the person completes it), it does not send by itself
+  await page.locator('[data-starter="explain"]').click();
+  await expect(page.locator("#chat-input")).toHaveValue(/Explică-mi simplu/);
+  await page.locator("#chat-input").fill("Explică-mi simplu ce e un recuperator de căldură");
+  await page.locator('[data-action="send"]').click();
   await expect(page.locator("#pilot-consent")).toBeVisible();
   await page.locator('[data-action="pilot-yes"]').click();
   await expect(page.locator('[data-msg="reply"] .bubble')).toHaveText("Răspuns gratuit.");

@@ -1,10 +1,12 @@
 // App shell: a large title per screen, bottom tab bar on phones, side bar on wide screens.
 // Routing uses the URL hash (#/proiecte), so the back button works and GitHub Pages never returns 404.
+// AIW-09 (Adrian): the chat is the home screen — you open the app and write. Four tabs; Continuity and
+// Import keep their addresses and are reached from Settings → Tools (and Import from the chat's history).
 import type { ComponentChildren, JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { useClosedByNewerVersion, useStorageInfo } from "./data";
-import { setLang, useI18n, type Key, type Lang } from "./i18n";
-import { IconChat, IconContinuity, IconImport, IconMemory, IconProjects, IconSettings } from "./icons";
+import { fill, setLang, useI18n, type Key, type Lang } from "./i18n";
+import { IconChat, IconMemory, IconProjects, IconSettings } from "./icons";
 import { isStandalone, useOfflineState } from "./offline";
 import { BackupCard } from "./backup";
 import { ChatScreen } from "./chat";
@@ -12,6 +14,7 @@ import { ImportScreen } from "./import";
 import { ContinuityScreen, Launcher, ReceiveScreen, SessionPage } from "./continuity";
 import { ContextPreview, EntryPage, MemoryHistory, MemoryTab, ProjectMemory } from "./memory";
 import { ProjectPage, ProjectsScreen, TrashScreen } from "./projects";
+import { mediaCache, useMediaCount } from "./media";
 import { ToastHost } from "./widgets";
 
 type Route = "chat" | "proiecte" | "memorie" | "continuitate" | "import" | "lansator" | "setari";
@@ -20,13 +23,12 @@ const TABS: { route: Route; label: Key; Icon: () => JSX.Element }[] = [
   { route: "chat", label: "tabChat", Icon: IconChat },
   { route: "proiecte", label: "tabProjects", Icon: IconProjects },
   { route: "memorie", label: "tabMemory", Icon: IconMemory },
-  { route: "continuitate", label: "tabContinuity", Icon: IconContinuity },
-  // AIW-06.1 (Adrian): the Launcher tab became Import; the launcher stays reachable from Continuity
-  { route: "import", label: "tabImport", Icon: IconImport },
   { route: "setari", label: "tabSettings", Icon: IconSettings },
 ];
+/** Every screen with an address of its own (the tabs, plus the pages reached from Settings → Tools). */
+const ROUTES: Route[] = ["chat", "proiecte", "memorie", "continuitate", "import", "lansator", "setari"];
 
-/** #/proiecte, #/proiect/<id>, #/cos and the other tabs. Unknown addresses open the project list. */
+/** #/proiecte, #/proiect/<id>, #/cos and the other tabs. The empty address and unknown ones open the chat. */
 interface Location {
   route: Route;
   view: "list" | "project" | "trash" | "tab" | "memory" | "entry" | "history" | "context" | "session" | "launch" | "receive" | "chat";
@@ -58,7 +60,8 @@ function readRoute(): Location {
   const m = /^proiect\/([^/]+)$/.exec(r);
   if (m) return { route: "proiecte", view: "project", id: decodeURIComponent(m[1]) };
   if (r === "cos") return { route: "proiecte", view: "trash" };
-  if (r === "proiecte" || !TABS.some((t) => t.route === r)) return { route: "proiecte", view: "list" };
+  if (r === "proiecte") return { route: "proiecte", view: "list" };
+  if (!r || !ROUTES.includes(r as Route)) return { route: "chat", view: "chat" };
   return { route: r as Route, view: "tab" };
 }
 
@@ -83,7 +86,7 @@ export function App(): JSX.Element {
   const closed = useClosedByNewerVersion();
   return (
     <div class="shell">
-      <nav class="tabbar" aria-label={t("nav")}>
+      <nav class="tabbar" aria-label={t("nav")} style={`--tabs:${TABS.length}`}>
         <div class="brand" aria-hidden="true">{t("appName")}</div>
         {TABS.map(({ route: r, label, Icon }) => (
           <a
@@ -143,6 +146,25 @@ function Settings(): JSX.Element {
     offline === "ready" ? t("offlineReady") : offline === "pending" ? t("offlinePending") : t("offlineUnavailable");
   return (
     <Screen title={t("settingsTitle")}>
+      {/* AIW-09: the pages that left the tab bar, and why this app (what the person gets here) */}
+      <div class="card" data-tools>
+        <h2>{t("toolsTitle")}</h2>
+        <div class="menu">
+          <a class="menu-item" href="#/import" data-route="import">⇣ {t("toolsImport")}</a>
+          <a class="menu-item" href="#/continuitate" data-route="continuitate">→ {t("toolsContinuity")}</a>
+          <a class="menu-item" href="#/cos">🗑 {t("toolsTrash")}</a>
+        </div>
+      </div>
+      <div class="card why" data-why>
+        <h2>{t("whyTitle")}</h2>
+        <ul class="why-list">
+          <li><b>✦</b><span><strong>{t("why1")}</strong> {t("why1Text")}</span></li>
+          <li><b>🆓</b><span><strong>{t("why2")}</strong> {t("why2Text")}</span></li>
+          <li><b>🔒</b><span><strong>{t("why3")}</strong> {t("why3Text")}</span></li>
+          <li><b>🧠</b><span><strong>{t("why4")}</strong> {t("why4Text")}</span></li>
+          <li><b>🎨</b><span><strong>{t("why5")}</strong> {t("why5Text")}</span></li>
+        </ul>
+      </div>
       <div class="card">
         <h2>{t("language")}</h2>
         <div class="segmented" role="radiogroup" aria-label={t("language")}>
@@ -192,6 +214,8 @@ function Settings(): JSX.Element {
 function StorageCard(): JSX.Element {
   const { t, lang } = useI18n();
   const [info, ask] = useStorageInfo();
+  // AIW-09: the pictures made in the chat (their bytes; the conversations keep only the addresses)
+  const pictures = useMediaCount();
   const text = info.persist === "persisted" ? t("persistOk") : info.persist === "not-persisted" ? t("persistNo") : info.persist ? t("persistUnsupported") : "";
   const mb = info.used === null ? null : new Intl.NumberFormat(lang, { maximumFractionDigits: 1 }).format(info.used / 1048576) + " MB";
   return (
@@ -201,6 +225,12 @@ function StorageCard(): JSX.Element {
       {mb && <p class="muted">{t("usedSpace")}: {mb}</p>}
       {info.persist === "not-persisted" && (
         <button type="button" class="button secondary small-button" onClick={() => void ask()}>{t("persistAsk")}</button>
+      )}
+      {pictures > 0 && (
+        <p class="muted" data-pictures={pictures}>
+          {fill(t("storagePictures"), { n: String(pictures) })}{" "}
+          <button type="button" class="link-like" data-action="clear-pictures" onClick={() => void mediaCache.clear()}>{t("storagePicturesClear")}</button>
+        </p>
       )}
     </div>
   );
